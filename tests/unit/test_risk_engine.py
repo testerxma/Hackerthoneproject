@@ -28,6 +28,7 @@ from speedtrader.risk.engine import DeterministicRiskEngine, RiskEngineError  # 
 from speedtrader.risk.measures import (  # noqa: E402
     pearson_correlation,
     portfolio_heat_pct,
+    sector_exposure_pct,
     size_position,
 )
 from speedtrader.risk.state import (  # noqa: E402
@@ -317,3 +318,126 @@ def test_determinism():
                for r in (ENGINE.evaluate(signal=sig, account=acc, portfolio=pf)
                          for _ in range(50))}
     assert len(results) == 1
+
+
+# ================================================================ sector cap
+# The sector cap is the equity analogue of Bot v6's CurrencyExposure() and is the
+# only exposure rule that was translated rather than ported. Until now it had no
+# test at all, so nothing proved the translated rule actually blocks anything.
+
+def _tech(symbol: str, sector: str | None = "Technology") -> OpenPosition:
+    """qty 1000 x $2.00 stop = $2,000 = 2.0% of a $100k account."""
+    return OpenPosition(symbol=symbol, side=Direction.BUY, quantity=1000,
+                        entry_price=100.0, stop_loss=98.0, sector=sector)
+
+
+def test_sector_exposure_cap_blocks():
+    #   3 x 2.0% = 6.0% already in Technology, + 1.0% for this trade = 7.0% > 6.0%
+    pf = PortfolioState(positions=[_tech(s) for s in ("MSFT", "NVDA", "AMD")])
+    r = ENGINE.evaluate(signal=make_signal(), account=make_account(),
+                        portfolio=pf, sector="Technology")
+    assert r.verdict is RiskGateVerdict.REJECT
+    assert "sector exposure" in r.blocking_reason.lower()
+    assert "Technology" in r.blocking_reason
+
+
+def test_sector_exposure_counts_only_the_matching_sector():
+    """An Energy book must not consume the Technology budget."""
+    pf = PortfolioState(positions=[_tech(s, "Energy") for s in ("XOM", "CVX", "COP")])
+    r = ENGINE.evaluate(signal=make_signal(), account=make_account(),
+                        portfolio=pf, sector="Technology")
+    assert r.verdict is not RiskGateVerdict.REJECT
+    sec = [c for c in r.checks if c.rule == "sector_exposure"][0]
+    assert sec.passed and sec.observed == pytest.approx(1.0)   # this trade only
+
+
+def test_sector_check_absent_when_sector_unknown():
+    """No sector supplied means the rule cannot be evaluated, so it is not
+    recorded as a silent pass — it is simply not among the checks."""
+    r = ENGINE.evaluate(signal=make_signal(), account=make_account(),
+                        portfolio=PortfolioState(), sector=None)
+    assert [c for c in r.checks if c.rule == "sector_exposure"] == []
+
+
+def test_sector_exposure_pct_treats_an_unstopped_position_as_full_risk():
+    """Mirrors PositionRiskPct(): no stop is assumed to be a full unit of risk,
+    never zero. Assuming zero is the dangerous direction."""
+    pf = PortfolioState(positions=[
+        OpenPosition(symbol="MSFT", side=Direction.BUY, quantity=1000,
+                     entry_price=100.0, stop_loss=None, sector="Technology"),
+    ])
+    exp = sector_exposure_pct(pf, make_account(), "Technology", 1.0)
+    assert exp == pytest.approx(1.0)          # substituted, not NaN, not 0.0
+    assert exp == exp                          # not NaN
+
+
+def test_sector_exposure_pct_is_zero_without_a_sector():
+    assert sector_exposure_pct(PortfolioState(positions=[_tech("MSFT")]),
+                               make_account(), None, 1.0) == 0.0
+
+
+# ====================================================== size rounds to zero
+# A sub-one-share result must REJECT, not silently submit a 0-share order.
+
+def test_size_rounding_to_zero_shares_is_rejected():
+    #   1% of $400 = $4.00 risk budget / $4.275 stop = 0.94 shares -> floor 0
+    tiny = make_account(balance=400.0, equity=400.0,
+                        day_start_equity=400.0, equity_high_water=400.0)
+    r = ENGINE.evaluate(signal=make_signal(), account=tiny,
+                        portfolio=PortfolioState())
+    assert r.verdict is RiskGateVerdict.REJECT
+    assert "zero shares" in r.blocking_reason
+    assert r.approved_quantity is None or r.approved_quantity == 0
+
+
+def test_zero_share_rejection_is_recorded_as_a_check_not_just_a_reason():
+    tiny = make_account(balance=400.0, equity=400.0,
+                        day_start_equity=400.0, equity_high_water=400.0)
+    r = ENGINE.evaluate(signal=make_signal(), account=tiny,
+                        portfolio=PortfolioState())
+    q = [c for c in r.checks if c.rule == "computed_quantity"]
+    assert len(q) == 1 and not q[0].passed
+
+
+# ========================================================= revalidation §57
+# The Portfolio Manager may modify a proposal, and every modification must come
+# back through this engine. These tests pin the property that makes that safe.
+
+def test_revalidate_applies_the_identical_rule_set():
+    sig, acc, pf = make_signal(), make_account(), PortfolioState()
+    a = ENGINE.evaluate(signal=sig, account=acc, portfolio=pf)
+    b = ENGINE.revalidate(signal=sig, account=acc, portfolio=pf)
+    assert (a.verdict, a.approved_quantity, a.size_multiplier) == \
+           (b.verdict, b.approved_quantity, b.size_multiplier)
+    assert [c.rule for c in a.checks] == [c.rule for c in b.checks]
+
+
+def test_revalidate_rejects_what_evaluate_rejects():
+    """Revalidation is not a second chance. A breach stays a breach."""
+    pf = PortfolioState(positions=[_tech(s) for s in ("MSFT", "NVDA", "AMD")])
+    kw = dict(signal=make_signal(), account=make_account(),
+              portfolio=pf, sector="Technology")
+    assert ENGINE.evaluate(**kw).verdict is RiskGateVerdict.REJECT
+    assert ENGINE.revalidate(**kw).verdict is RiskGateVerdict.REJECT
+
+
+def test_revalidate_cannot_be_handed_a_quantity_to_approve():
+    """The engine is the sole sizing authority: there is no parameter through
+    which a caller can propose, request or inject an approved quantity."""
+    kw = dict(signal=make_signal(), account=make_account(),
+              portfolio=PortfolioState())
+    with pytest.raises(TypeError):
+        ENGINE.revalidate(**kw, approved_quantity=10_000)
+    with pytest.raises(TypeError):
+        ENGINE.revalidate(**kw, quantity=10_000)
+
+
+def test_revalidate_after_a_portfolio_change_reflects_the_new_portfolio():
+    """The PM cannot revalidate against the portfolio the proposal was sized on."""
+    sig, acc = make_signal(), make_account()
+    assert ENGINE.evaluate(signal=sig, account=acc,
+                           portfolio=PortfolioState()).verdict is RiskGateVerdict.PASS
+    filled_up = PortfolioState(positions=[_tech(s) for s in
+                                          ("MSFT", "NVDA", "AMD", "TSLA")])
+    assert ENGINE.revalidate(signal=sig, account=acc,
+                             portfolio=filled_up).verdict is RiskGateVerdict.REJECT

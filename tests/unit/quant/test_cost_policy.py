@@ -310,3 +310,87 @@ def test_full_override_applied():
     assert p.override_applied is True
     assert p.regulatory.taf_per_share == 0.0004
     assert cost_policy_from_config(c, symbol="MSFT").override_applied is False
+
+
+# ============================================ config/code drift & malformed input
+# Every branch below is a fail-closed guard. An untested fail-closed guard is
+# indistinguishable from a fail-OPEN one, so each is exercised explicitly.
+
+def test_model_drift_between_config_and_code_is_refused():
+    """A config written for a different cost model must not be silently mispriced.
+    This is the exact failure class that desynchronised the module in the first
+    place, so it fails loudly rather than parsing a foreign schema."""
+    c = cfg(); c[COST_BLOCK]["model"] = "some_other_cost_model_v9"
+    with pytest.raises(CostPolicyInvalid, match="model"):
+        cost_policy_from_config(c)
+
+
+def test_declared_model_must_not_be_empty():
+    c = cfg(); c[COST_BLOCK]["model"] = "   "
+    with pytest.raises(CostPolicyInvalid, match="model"):
+        cost_policy_from_config(c)
+
+
+def test_slippage_may_never_be_authoritative():
+    """No vendor publishes another party's slippage. Marking an assumption as
+    authoritative would launder a guess into a citation."""
+    with pytest.raises(CostPolicyInvalid, match="authoritative"):
+        policy(slippage={"per_share": 0.01, "source": "authoritative",
+                         "assumption": "claimed from a schedule"})
+
+
+@pytest.mark.parametrize("component", ["commission", "regulatory", "slippage"])
+def test_non_mapping_component_rejected(component):
+    with pytest.raises(CostPolicyInvalid, match=component):
+        policy(**{component: ["not", "a", "mapping"]})
+
+
+def test_non_mapping_cost_block_rejected():
+    with pytest.raises(CostPolicyInvalid, match=COST_BLOCK):
+        cost_policy_from_config({COST_BLOCK: "not a mapping"})
+
+
+def test_non_mapping_default_rejected():
+    c = cfg(); c[COST_BLOCK]["default"] = "not a mapping"
+    with pytest.raises(CostPolicyInvalid, match="default"):
+        cost_policy_from_config(c)
+
+
+def test_non_mapping_override_rejected():
+    c = cfg(); c[COST_BLOCK]["overrides"] = {"AAPL": "not a mapping"}
+    with pytest.raises(CostPolicyInvalid, match="AAPL"):
+        cost_policy_from_config(c, symbol="AAPL")
+
+
+@pytest.mark.parametrize("field", ["rates_effective_date", "rates_source"])
+def test_blank_provenance_field_rejected(field):
+    c = cfg(); c[COST_BLOCK][field] = "   "
+    with pytest.raises(CostPolicyInvalid, match=field):
+        cost_policy_from_config(c)
+
+
+@pytest.mark.parametrize("entry,tp", [(0.0, 110.0), (-1.0, 110.0),
+                                      (100.0, 0.0), (100.0, -5.0)])
+def test_non_positive_prices_rejected(entry, tp):
+    """A zero or negative price would silently zero the notional fees."""
+    with pytest.raises(CostPolicyInvalid):
+        policy().estimate(entry=entry, take_profit=tp, direction="BUY")
+
+
+def test_regulatory_operator_assumption_needs_an_assumption_too():
+    """The rule applies to every component, not just slippage."""
+    r = {**PROD[COST_BLOCK]["default"]["regulatory"], "source": "operator_assumption"}
+    r.pop("assumption", None)
+    with pytest.raises(CostPolicyInvalid, match="assumption"):
+        policy(regulatory=r)
+
+
+def test_override_lookup_is_case_insensitive_on_the_symbol():
+    c = cfg()
+    c[COST_BLOCK]["overrides"] = {"AAPL": {
+        "commission": dict(COMMISSION_FIXTURE),
+        "regulatory": dict(PROD[COST_BLOCK]["default"]["regulatory"]),
+        "slippage": {"per_share": 0.03, "source": "operator_assumption",
+                     "assumption": "fixture"}}}
+    assert cost_policy_from_config(c, symbol="aapl").override_applied is True
+    assert cost_policy_from_config(c, symbol="AAPL").slippage.per_share == 0.03

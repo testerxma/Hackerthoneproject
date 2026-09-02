@@ -52,7 +52,7 @@ require_broker_confirmation: true # §62: submitted != filled, ever
 
 transaction_cost:
   model: pre_trade_round_trip_per_share_estimate
-  rates_effective_date: "2026-07-20"
+  rates_effective_date: "2026-09-01"
   rates_source: "https://files.alpaca.markets/disclosures/library/BrokFeeSched.pdf"
 
   default:
@@ -65,7 +65,7 @@ transaction_cost:
                                         #   NMS equities: 1 share = 1 equiv. share
       sides_per_round_trip: 2           # CAT applies to both legs; SEC/TAF to the sell
       source: authoritative
-      reference: "Alpaca Brokerage Fee Schedule, revised 2026-07-20"
+      reference: "Alpaca Brokerage Fee Schedule, revised 2026-09-01"
 
     # ---- OPERATOR ASSUMPTION: explicitly authorised, explicitly marked ----
     slippage:
@@ -77,25 +77,35 @@ transaction_cost:
         slippage. Replace with a measured per-share figure once fills exist. Until
         then EV is optimistic by exactly the unmeasured slippage.
 
-    # ---- UNRESOLVED: blocks the pipeline until an operator supplies it ----
-    # The fee schedule states commissions as a RANGE (0%-3% per transaction) and
-    # notes that arrangements via an authorized business partner, or use of the
-    # Elite Smart Router, may preclude commission-free trades. A range is not a
-    # value, and a percentage cannot populate a per-share field without a price.
-    # Which arrangement applies is a property of YOUR account, not of the schedule.
+    # ---- RESOLVED 2026-09-02: standard retail, commission-free ----
+    # The schedule (verified against the PDF text, not a summary — see
+    # docs/decisions/0001-transaction-cost-research.md) states that Alpaca
+    # Securities does not charge commissions EXCEPT for: index options trades,
+    # use of the Elite Smart Router under the Alpaca Elite offering, order flow
+    # determined to be non-retail, and accounts established via an authorized
+    # business partner.
     #
-    # Supply BOTH numbers and a source. If your account is genuinely
-    # commission-free, that is recorded as:
-    #     per_share: 0.0
-    #     rate_of_notional: 0.0
-    #     source: operator_assumption
-    #     assumption: "Direct Alpaca account, standard arrangement, no partner
-    #                  routing and no Elite Smart Router — confirmed on <date>."
-    # It must be an explicit recorded decision, never a silent default.
+    # NOTE: an earlier version of this comment claimed the schedule quotes a
+    # "RANGE (0%-3% per transaction)". No such range appears in the current
+    # schedule; that claim was wrong and has been removed.
+    #
+    # source is operator_assumption, NOT authoritative, and the distinction is
+    # deliberate: the RATE is published, but the APPLICABILITY — that this
+    # account is standard retail and none of the four exceptions apply — is an
+    # attestation about the account, which no document can make.
     commission:
-      per_share:                       # REQUIRED — operator decision
-      rate_of_notional:                # REQUIRED — operator decision
-      source:                          # REQUIRED — authoritative | operator_assumption
+      per_share:        0.0
+      rate_of_notional: 0.0
+      source: operator_assumption
+      assumption: >-
+        Direct Alpaca paper account on the standard paper endpoint, standard
+        routing: no Elite Smart Router, no authorized-business-partner
+        arrangement, and retail order flow. Under the Brokerage Fee Schedule
+        (revised 2026-09-01) that combination carries no commission on US equity
+        trades. Attested 2026-09-02. This records the rate as ZERO, which is not
+        the same as the rate being UNKNOWN — if this account is ever moved to
+        Alpaca Elite, routed through a partner, or reclassified as non-retail,
+        this value becomes wrong and must be re-stated.
 
   overrides: {}                        # per symbol; a partial override is rejected
 

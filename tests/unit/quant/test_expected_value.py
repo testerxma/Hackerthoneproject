@@ -4,7 +4,8 @@ EV tests. Hand-computed from docs/reference/SpeedTraderBot_v6.1.mq5
 
 TEST-ONLY COST INJECTION: the transaction cost below exists solely in these
 fixtures. It is never written to production YAML and never loaded by QuantCore
-at runtime — proven by test_shipped_execution_config_has_no_transaction_cost.
+at runtime — proven by
+test_shipped_execution_config_records_every_cost_component_explicitly.
 """
 from __future__ import annotations
 
@@ -33,8 +34,8 @@ T0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 # --- TEST FIXTURE ONLY. Never a production default. ---
 def _cost_block(commission_per_share=0.0, spread=True):
-    """TEST FIXTURE ONLY. Regulatory rates mirror the official schedule; the
-    commission is the value the operator has not yet resolved in production."""
+    """TEST FIXTURE ONLY. Rates here are chosen to make the arithmetic legible
+    (mostly zero), NOT to mirror production. Never written to production YAML."""
     return {"transaction_cost": {
                 "model": "pre_trade_round_trip_per_share_estimate",
                 "rates_effective_date": "2026-07-20",
@@ -117,13 +118,23 @@ def test_raises_before_any_arithmetic():
         assert "intentional" in str(e)
 
 
-def test_shipped_execution_config_has_no_transaction_cost():
-    """The gap is real, not accidentally closed by a stray commit."""
+def test_shipped_execution_config_records_every_cost_component_explicitly():
+    """No component may be silently absent or silently defaulted.
+
+    Commission was resolved 2026-09-02 to standard-retail commission-free. That
+    is a recorded decision with a stated basis, which is a different thing from
+    a value nobody supplied — so this asserts the PROVENANCE is present rather
+    than asserting the value is missing.
+    """
     cfg_path = Path(__file__).resolve().parents[3] / "configs" / "execution_config.yaml"
     d = yaml.safe_load(cfg_path.read_text())
-    c = ((d.get(COST_KEY) or {}).get("default") or {}).get("commission") or {}
-    assert c.get("per_share") is None and c.get("rate_of_notional") is None, \
-        "a commission value was committed without an operator decision"
+    default = (d.get(COST_KEY) or {}).get("default") or {}
+    for name in ("commission", "regulatory", "slippage"):
+        assert default.get(name), f"{name} missing from the shipped config"
+        assert default[name].get("source"), f"{name} has no recorded provenance"
+    c = default["commission"]
+    assert c["per_share"] == 0.0 and c["rate_of_notional"] == 0.0
+    assert c["source"] == "operator_assumption" and c["assumption"].strip()
     assert d.get("include_spread_in_ev_cost") is True
 
 

@@ -111,19 +111,26 @@ def test_quantcore_refuses_to_start_without_cost():
         QuantCore([S07], {"signal_ttl_seconds": 30})
 
 
-def test_no_candidate_emitted_with_production_config():
-    """The shipped config has no cost key, so no candidate can ever be produced."""
+def test_production_config_builds_a_quant_core():
+    """Commission was resolved 2026-09-02, so the shipped config now runs."""
     prod = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
-    assert (prod.get(COST_KEY) or {}).get("default", {}).get(
-        "commission_per_share") is None
+    QuantCore([S07], prod)          # must not raise
+
+
+def test_production_config_recloses_if_the_commission_decision_is_removed():
+    """The fail-closed gate is satisfied, not deleted."""
+    prod = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
+    del prod[COST_KEY]["default"]["commission"]
     with pytest.raises(EVCostNotConfigured):
         QuantCore([S07], prod)
 
 
-def test_shipped_config_has_no_transaction_cost_key():
+def test_shipped_config_states_a_basis_for_every_rate():
+    """Guards the original intent — no fee rate without a recorded source."""
     prod = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
-    assert ((prod.get(COST_KEY) or {}).get("default") or {}).get(
-        "commission_per_share") is None, "invented fee rates were committed"
+    default = ((prod.get(COST_KEY) or {}).get("default") or {})
+    for name in ("commission", "regulatory", "slippage"):
+        assert default[name].get("source"), f"{name} rate committed with no source"
     assert prod.get("include_spread_in_ev_cost") is True
 
 

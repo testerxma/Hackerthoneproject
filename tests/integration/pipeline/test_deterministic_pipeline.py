@@ -5,6 +5,7 @@ risk gate -> persisted DecisionLog. No network, no LLM, no broker.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -206,9 +207,17 @@ def test_both_decisions_persisted_separately(tmp_path):
 
 # ============================================ fail closed, end to end
 
-def test_shipped_config_produces_zero_decisions(tmp_path):
-    """The production configuration cannot run the pipeline. By design."""
+def test_shipped_config_now_builds_the_pipeline(tmp_path):
+    """Commission was resolved 2026-09-02, so the production config runs."""
     prod = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
+    build(tmp_path, exec_cfg=prod)          # must not raise
+
+
+def test_shipped_config_recloses_when_the_commission_decision_is_removed(tmp_path):
+    """The fail-closed gate is satisfied, not removed. Deleting the recorded
+    decision must stop the pipeline again and write nothing."""
+    prod = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
+    del prod["transaction_cost"]["default"]["commission"]
     with pytest.raises(EVCostNotConfigured):
         build(tmp_path, exec_cfg=prod)
     assert list(tmp_path.glob("*.jsonl")) == []
@@ -231,14 +240,18 @@ def test_partial_cost_config_produces_zero_decisions(tmp_path, block, key):
     assert list(tmp_path.glob("*.jsonl")) == []
 
 
-def test_production_config_blocks_on_unresolved_commission(tmp_path):
-    """The single remaining operator decision keeps the pipeline closed."""
+def test_production_config_carries_provenance_for_every_cost_component(tmp_path):
+    """Every rate reaching EV must state where it came from."""
     prod = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
-    reg = prod["transaction_cost"]["default"]["regulatory"]
-    assert reg["source"] == "authoritative"      # regulatory IS resolved
-    with pytest.raises(EVCostNotConfigured, match="commission"):
-        build(tmp_path, exec_cfg=prod)
-    assert list(tmp_path.glob("*.jsonl")) == []
+    default = prod["transaction_cost"]["default"]
+    assert default["regulatory"]["source"] == "authoritative"
+    # Commission and slippage are attestations about THIS account and THIS
+    # execution history; no published document can supply either.
+    assert default["commission"]["source"] == "operator_assumption"
+    assert default["slippage"]["source"] == "operator_assumption"
+    for name in ("commission", "slippage"):
+        assert default[name]["assumption"].strip()
+    build(tmp_path, exec_cfg=prod)
 
 
 def test_stale_bars_produce_no_snapshot_and_no_decision(tmp_path):
@@ -257,14 +270,37 @@ def test_insufficient_history_produces_no_snapshot(tmp_path):
 
 # ============================================ CLI
 
-def test_cli_fails_closed_with_shipped_config(tmp_path):
+def test_cli_fails_closed_when_market_data_is_unavailable(tmp_path):
+    """With the cost policy resolved, the next fail-closed gate is data. An
+    empty fixture directory must produce no snapshot, no decision and a
+    non-zero exit — never a decision built on absent data."""
     p = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "run_deterministic.py"),
          "--fixture", str(tmp_path), "--symbol", "TEST", "--balance", "100000"],
         capture_output=True, text=True, cwd=str(ROOT))
+    assert p.returncode != 0
+    assert "NO SNAPSHOT" in p.stdout
+    assert "data_unavailable" in p.stdout
+    assert list(tmp_path.glob("*.jsonl")) == []
+
+
+def test_cli_fails_closed_when_the_cost_policy_is_incomplete(tmp_path, monkeypatch):
+    """The CLI's own cost fail-closed path, exercised against a broken config
+    rather than relying on the shipped one being unresolved."""
+    broken = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
+    del broken["transaction_cost"]["default"]["commission"]
+    cfg_dir = tmp_path / "configs"; cfg_dir.mkdir()
+    for src in (ROOT / "configs").glob("*.yaml"):
+        (cfg_dir / src.name).write_text(src.read_text())
+    (cfg_dir / "execution_config.yaml").write_text(yaml.safe_dump(broken))
+    env = {**os.environ, "SPEEDTRADER_CONFIG_DIR": str(cfg_dir)}
+    p = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "run_deterministic.py"),
+         "--fixture", str(tmp_path), "--symbol", "TEST", "--balance", "100000"],
+        capture_output=True, text=True, cwd=str(ROOT), env=env)
     assert p.returncode == 2
     assert "FAIL CLOSED" in p.stderr
-    assert "transaction_cost" in p.stderr
+    assert "commission" in p.stderr
 
 
 def test_cli_requires_balance_rather_than_defaulting(tmp_path):

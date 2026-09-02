@@ -2,7 +2,7 @@
 Price-aware cost policy tests.
 
 Rate VALUES are asserted only where they are transcribed from the official Alpaca
-Brokerage Fee Schedule (revised 2026-07-20). Everything else tests structure,
+Brokerage Fee Schedule (revised 2026-09-01). Everything else tests structure,
 arithmetic, provenance and failure.
 """
 from __future__ import annotations
@@ -54,12 +54,12 @@ def test_production_regulatory_rates_are_authoritative():
     assert r["cat_per_share"] == CAT
     assert r["sides_per_round_trip"] == 2
     assert r["source"] == "authoritative"
-    assert "2026-07-20" in r["reference"]
+    assert "2026-09-01" in r["reference"]
 
 
 def test_production_provenance_recorded():
     b = PROD[COST_BLOCK]
-    assert b["rates_effective_date"] == "2026-07-20"
+    assert b["rates_effective_date"] == "2026-09-01"
     assert b["rates_source"].startswith("https://files.alpaca.markets/")
     assert b["model"] == MODEL_NAME
 
@@ -71,12 +71,40 @@ def test_production_slippage_is_marked_as_an_assumption_not_a_measurement():
     assert "NOT a claim" in s["assumption"]
 
 
-def test_production_commission_remains_unresolved_and_fails_closed():
-    """The one value no document can supply. The pipeline must stay blocked."""
+def test_production_commission_is_resolved_with_recorded_provenance():
+    """Resolved 2026-09-02 to standard-retail commission-free.
+
+    The rate being ZERO is not the same as the rate being UNKNOWN, and the
+    difference has to be visible in the record: a zero with no provenance is
+    indistinguishable from a value nobody ever decided.
+    """
     c = PROD[COST_BLOCK]["default"]["commission"]
-    assert all(c[k] is None for k in ("per_share", "rate_of_notional", "source"))
+    assert c["per_share"] == 0.0 and c["rate_of_notional"] == 0.0
+    # NOT 'authoritative': the published schedule supplies the rate, but the
+    # claim that this account is standard retail is an attestation, not a citation.
+    assert c["source"] == "operator_assumption"
+    assert c["assumption"].strip(), "a zero commission with no stated basis"
+    cost_policy_from_config(PROD)          # the production config now builds
+
+
+def test_production_config_still_fails_closed_without_the_commission():
+    """The gate that was protecting us is still there — it is simply satisfied
+    now. Removing the decision must re-close the pipeline immediately."""
+    import copy as _copy
+    c = _copy.deepcopy(PROD)
+    del c[COST_BLOCK]["default"]["commission"]
     with pytest.raises(EVCostNotConfigured, match="commission"):
-        cost_policy_from_config(PROD)
+        cost_policy_from_config(c)
+
+
+def test_production_commission_may_not_be_silently_upgraded_to_authoritative():
+    """No vendor document can attest to which arrangement an account is on."""
+    c = cfg(); c[COST_BLOCK]["default"]["commission"] = {
+        "per_share": 0.0, "rate_of_notional": 0.0, "source": "authoritative"}
+    p = cost_policy_from_config(c)
+    # It parses (a schedule CAN state a commission), but the production config
+    # must not claim it, which the test above pins.
+    assert p.commission.source.value == "authoritative"
 
 
 # ============================================ fail closed
@@ -257,7 +285,7 @@ def test_breakdown_records_per_component_provenance():
     b = p.breakdown(p.estimate(entry=115.0, take_profit=121.0, direction="BUY"))
     assert b["provenance"]["regulatory"]["source"] == "authoritative"
     assert b["provenance"]["slippage"]["source"] == "operator_assumption"
-    assert b["rates_effective_date"] == "2026-07-20"
+    assert b["rates_effective_date"] == "2026-09-01"
     assert b["rates_source"].startswith("https://")
 
 

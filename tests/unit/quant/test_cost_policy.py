@@ -247,6 +247,9 @@ def test_breakdown_declares_model_and_exclusions():
     assert b["model"] == MODEL_NAME
     assert "taf_per_trade_cap" in b["excludes"]
     assert "daily_fee_aggregation_rounding" in b["excludes"]
+    # The persisted record must list exactly what the module declares it omits;
+    # a breakdown that under-reports its own exclusions is a false audit trail.
+    assert b["excludes"] == list(EXCLUSIONS)
 
 
 def test_breakdown_records_per_component_provenance():

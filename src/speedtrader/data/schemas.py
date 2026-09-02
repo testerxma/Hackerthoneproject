@@ -267,6 +267,14 @@ class CandidateSignal(Base):
     ev_is_bootstrap: bool = True           # True while strategy has < min_trades history
     combined_priority: float
 
+    #: The cost assumptions that produced `expected_value`, carried so the
+    #: persisted decision can be reconstructed. Without this the record stores a
+    #: number with no way to tell which fee schedule, which commission
+    #: attestation and which slippage assumption produced it — and a positive-EV
+    #: gate whose costs cannot be inspected is not auditable. Populated by
+    #: CandidateBuilder from CostPolicy.breakdown(); see quant/cost_policy.py.
+    cost_breakdown: dict = Field(default_factory=dict)
+
     strategy_votes: list[StrategyVote] = Field(default_factory=list)
     regime: MarketRegime = MarketRegime.UNKNOWN
 

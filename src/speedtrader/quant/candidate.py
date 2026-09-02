@@ -110,6 +110,10 @@ class CandidateBuilder:
             expected_value=ev.expected_value,
             ev_is_bootstrap=ev.is_bootstrap,
             combined_priority=ev.combined_priority,
+            # Provenance for the EV above. cost_policy.breakdown() documents
+            # itself as "carried onto every persisted decision"; it previously
+            # stopped here, inside EVResult, and was discarded.
+            cost_breakdown=ev.cost_breakdown,
             strategy_votes=[
                 StrategyVote(
                     strategy_id=output.strategy_id,

@@ -331,3 +331,44 @@ def test_breakdown_names_deferred_bonuses():
     assert c.score_breakdown.startswith("base50 ")
     for name in ("Squeeze", "Fib", "ORB"):
         assert name in c.score_breakdown
+
+
+# ============================================ cost provenance reaches the record
+# cost_policy.breakdown() documents itself as "provenance carried onto every
+# persisted decision". It was computed inside EVResult and discarded, so the
+# persisted decision stored expected_value with no way to tell which fee
+# schedule, commission attestation or slippage assumption produced it.
+
+def test_candidate_carries_the_cost_assumptions_behind_its_ev():
+    c = build_one()
+    cb = c.cost_breakdown
+    assert cb, "expected_value was recorded without the costs that produced it"
+    assert cb["model"] == "pre_trade_round_trip_per_share_estimate"
+    assert cb["rates_effective_date"] and cb["rates_source"].startswith("https://")
+    for component in ("commission", "regulatory", "slippage"):
+        assert cb["provenance"][component]["source"]
+
+
+def test_cost_breakdown_names_what_it_excludes():
+    """An audit trail that hides its own omissions is worse than none."""
+    cb = build_one().cost_breakdown
+    assert "taf_per_trade_cap" in cb["excludes"]
+    assert "daily_fee_aggregation_rounding" in cb["excludes"]
+    assert cb["quality"]["daily_rounding"] == "not_modelled_understates"
+
+
+def test_cost_breakdown_survives_a_json_round_trip():
+    """It is persisted to JSONL, so it must contain no non-serialisable types."""
+    import json
+    c = build_one()
+    restored = json.loads(json.dumps(c.cost_breakdown))
+    assert restored == c.cost_breakdown
+
+
+def test_ev_is_reconstructible_from_the_persisted_cost_breakdown():
+    """The point of the provenance: recompute the cost term from the record."""
+    c = build_one()
+    cb = c.cost_breakdown
+    assert cb["total_per_share"] == pytest.approx(
+        cb["per_share_fees"] + cb["spread"])
+    assert sum(cb["components"].values()) == pytest.approx(cb["per_share_fees"])

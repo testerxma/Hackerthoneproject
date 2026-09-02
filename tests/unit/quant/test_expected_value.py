@@ -197,7 +197,7 @@ def test_spread_included_from_snapshot_when_configured():
     r = ev(cfg=TEST_CFG, spread=0.06)
     assert r.cost_r == pytest.approx(0.07 / 3.0)
     assert r.cost_breakdown["spread"] == 0.06
-    assert r.cost_breakdown["fixed"] == pytest.approx(0.01)
+    assert r.cost_breakdown["per_share_fees"] == pytest.approx(0.01)
     assert r.cost_breakdown["components"]["slippage"] == 0.0
 
 

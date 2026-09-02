@@ -1,11 +1,12 @@
 """
-SpeedTrader AI — Pre-Trade Transaction Cost Policy (price-aware)
+SpeedTrader AI — Pre-Trade Transaction Cost Policy (price- and direction-aware)
 
 THIS IS A PRE-TRADE ESTIMATE. IT IS NOT A REALIZED FEE.
 
-    pre-trade  (here)     per-share at a known price, quantity-UNAWARE, feeds EV
-    post-trade (future)   quantity- and notional-AWARE, daily-aggregated,
-                          feeds TradeOutcome.fees
+    pre-trade  (here)     per-share, quantity-UNAWARE, priced from the proposal
+                          geometry, feeds expected_value
+    post-trade (future)   quantity- and notional-AWARE, applies caps, mirrors the
+                          broker's daily aggregation, feeds TradeOutcome.fees
 
 They must never share an implementation. Alpaca aggregates each fee type at the
 daily, per-account level and rounds the aggregate up to the nearest cent; a
@@ -24,43 +25,60 @@ A single constant is wrong by roughly an order of magnitude between a $12 stock
 and a $900 stock, because the SEC component scales with price and the others do
 not. That is the same class of error as carrying an FX pip constant into equities.
 
-WHAT IS KNOWABLE AT EV TIME
-    price     KNOWN     (CandidateSignal.entry)
-    quantity  UNKNOWN   (produced later by risk/measures.size_position)
+--------------------------------------------------------------------------------
+WHICH LEG IS THE SELL — WHY DIRECTION MATTERS
+--------------------------------------------------------------------------------
+SEC and TAF are charged on the SELL side only. Which leg that is depends on the
+direction of the trade, and that determines how well we can price it:
 
-So a notional-based fee IS expressible per share:  sec_per_share = rate * price.
-Only genuinely quantity-dependent mechanics -- the TAF per-trade cap and daily
-aggregation -- remain out of reach.
+    SELL (short)   the sell leg IS the entry      -> price KNOWN      -> exact
+    BUY  (long)    the sell leg is the exit       -> priced at the
+                                                     take_profit, the upper of
+                                                     the two outcomes  -> conservative
+
+Pricing the long's sell leg at `take_profit` is deliberate. The real exit price
+does not exist at EV time, and take_profit is the higher of the two modelled
+outcomes, so the SEC component is OVERSTATED rather than mis-stated in an unknown
+direction. A positive-EV gate may overstate cost safely; understating it lets a
+losing trade through. Every approximation in this module is therefore chosen to
+err toward MORE cost, with one documented exception below.
 
 --------------------------------------------------------------------------------
 EXACTNESS OF EACH COMPONENT -- STATED, NOT ASSUMED
 --------------------------------------------------------------------------------
-    CAT          EXACT         per share, both sides, no cap
-    TAF          CONSERVATIVE  per-share rate applied with the per-trade cap NOT
-                               applied. Uncapped >= capped, so cost is overstated
-                               and EV understated: the safe direction for a
-                               positive-EV gate.
-    SEC          APPROXIMATE   sell-side notional priced at ENTRY. The real sell
-                               happens at the exit price, which does not exist at
-                               EV time. Error is bounded by the price excursion.
-    commission   depends on the configured model; provenance recorded.
-    slippage     OPERATOR      never authoritative; no vendor publishes it.
+    CAT             EXACT         per share, both sides, no cap
+    TAF             CONSERVATIVE  per-share rate applied with the per-trade cap NOT
+                                  applied. Uncapped >= capped, so cost is
+                                  overstated and EV understated.
+    SEC on SELL     EXACT         the sell leg is the entry; the price is known
+    SEC on BUY      CONSERVATIVE  sell leg priced at take_profit
+    commission      depends on the configured arrangement; provenance recorded
+    slippage        OPERATOR      never authoritative; no vendor publishes it
+    daily rounding  NOT MODELLED  the ONE non-conservative omission. Alpaca
+                                  aggregates per fee type daily per account and
+                                  rounds up to the cent; that cannot be attributed
+                                  to a single pre-trade decision. Surfaced on every
+                                  estimate as quality["daily_rounding"] rather than
+                                  hidden.
 
 --------------------------------------------------------------------------------
 ROUND TRIP
 --------------------------------------------------------------------------------
-One round trip is one buy and one sell, so exactly ONE sell side regardless of
-direction. Sell-only fees (SEC, TAF) are counted once. CAT is counted
-`sides_per_round_trip` times.
+One round trip is one buy and one sell.
+
+    SEC, TAF     sell side only          -> counted ONCE
+    CAT          both sides              -> counted `sides_per_round_trip` times
+    commission   charged on each leg     -> per-share counted twice, and the
+                                            notional rate applied to BOTH prices
+    slippage     an execution assumption -> passed through as configured
 
 --------------------------------------------------------------------------------
-COST BASIS: live_economics
+WHAT THIS MODULE WILL NOT DO
 --------------------------------------------------------------------------------
-The execution environment is Alpaca Paper Trading, which charges no real fees.
-EV nevertheless models LIVE execution economics, not simulator charges. Zeroing
-costs because the simulator does not bill them would make EV describe the
-simulator rather than the strategy, and the positive-EV gate would measure
-nothing. Recorded on every decision as `cost_basis`.
+It will not invent a rate. Every required field must be supplied explicitly, and
+a missing or half-specified one raises rather than defaulting. An unexplained
+operator assumption is rejected too: a number with no stated reasoning is
+indistinguishable from a fabricated one.
 """
 
 from __future__ import annotations
@@ -70,14 +88,28 @@ from enum import StrEnum
 from typing import Any, Mapping
 
 COST_BLOCK = "transaction_cost"
-MODEL_ID = "pre_trade_estimate_v2_price_aware"
 
-REQUIRED_TOP = ("cost_basis", "rates_effective_date", "rates_source",
-                "commission", "regulatory", "slippage")
-REQUIRED_COMMISSION = ("model", "value", "source")
+#: Must equal `transaction_cost.model` in the execution config. The two are
+#: cross-checked at parse time: a config written for a different cost model than
+#: the code implements is a silent-mispricing risk, not a cosmetic mismatch.
+MODEL_NAME = "pre_trade_round_trip_per_share_estimate"
+
+#: Everything the estimate knowingly leaves out, carried onto every decision.
+#: Only `daily_fee_aggregation_rounding` can understate cost; the rest either
+#: overstate it or are out of scope for a pre-trade per-share figure.
+EXCLUSIONS = (
+    "taf_per_trade_cap",                # quantity-dependent; omitting it overstates
+    "daily_fee_aggregation_rounding",   # the one non-conservative omission
+    "market_impact",                    # not modelled at all
+    "short_borrow_cost",                # not modelled at all
+)
+
+REQUIRED_TOP = ("model", "rates_effective_date", "rates_source", "default")
+REQUIRED_COMPONENTS = ("commission", "regulatory", "slippage")
+REQUIRED_COMMISSION = ("per_share", "rate_of_notional", "source")
 REQUIRED_REGULATORY = ("sec_rate_of_notional", "taf_per_share", "cat_per_share",
                        "sides_per_round_trip", "source")
-REQUIRED_SLIPPAGE = ("per_share", "source", "assumption")
+REQUIRED_SLIPPAGE = ("per_share", "source")
 
 
 class CostSource(StrEnum):
@@ -86,16 +118,15 @@ class CostSource(StrEnum):
     OPERATOR_ASSUMPTION = "operator_assumption"
 
 
-class Exactness(StrEnum):
+class Quality(StrEnum):
     EXACT = "exact"
-    CONSERVATIVE = "conservative"    # overstates cost, understates EV
-    APPROXIMATE = "approximate"      # error not signed
+    CONSERVATIVE = "conservative"                # overstates cost, understates EV
+    NOT_MODELLED_UNDERSTATES = "not_modelled_understates"
 
 
-class CommissionModel(StrEnum):
-    NONE = "none"
-    PER_SHARE = "per_share"
-    RATE_OF_NOTIONAL = "rate_of_notional"
+#: The overall grade of an estimate: conservative everywhere except the daily
+#: aggregation rounding, which is not attributable to one decision.
+OVERALL_QUALITY = "conservative_except_daily_rounding"
 
 
 class CostPolicyError(RuntimeError):
@@ -121,20 +152,24 @@ class CostPolicyInvalid(CostPolicyError):
 
 @dataclass(frozen=True)
 class Commission:
-    """Per-share OR rate-of-notional. Both supported because Alpaca expresses
-    commissions as a percentage range, and a percentage cannot populate a
-    per-share field without a price."""
-    model: CommissionModel
-    value: float
-    source: CostSource
-    note: str = ""
+    """Per-share AND rate-of-notional, additively.
 
-    def per_share(self, price: float) -> float:
-        if self.model is CommissionModel.NONE:
-            return 0.0
-        if self.model is CommissionModel.PER_SHARE:
-            return self.value
-        return self.value * price       # RATE_OF_NOTIONAL
+    Both shapes are supported at once because the fee schedule quotes commission
+    as a PERCENTAGE range while a per-share arrangement is also possible; an
+    account may carry either or both. Forcing one shape would require a price to
+    express the other, which is exactly the conflation this module avoids.
+    """
+    per_share: float
+    rate_of_notional: float
+    source: CostSource
+    assumption: str = ""
+
+    def cost(self, entry: float, exit_price: float) -> float:
+        """Commission is charged on BOTH legs of the round trip."""
+        return (
+            self.per_share * 2.0
+            + self.rate_of_notional * (entry + exit_price)
+        )
 
 
 @dataclass(frozen=True)
@@ -145,47 +180,23 @@ class Regulatory:
     cat_per_share: float             # buys and sells, per share
     sides_per_round_trip: int
     source: CostSource
+    reference: str = ""
     #: Recorded but deliberately NOT applied: the cap is quantity-dependent and
     #: quantity does not exist at EV time. Omitting it overstates cost.
     taf_cap_per_trade: float | None = None
     taf_cap_share_threshold: int | None = None
 
-    def sec_per_share(self, price: float) -> float:
-        return self.sec_rate_of_notional * price
+    def sec(self, sell_price: float) -> float:
+        """Sell side only, once per round trip."""
+        return self.sec_rate_of_notional * sell_price
 
-    def per_share(self, price: float) -> float:
-        return (
-            self.sec_per_share(price)                         # sell side, once
-            + self.taf_per_share                              # sell side, once
-            + self.cat_per_share * self.sides_per_round_trip  # both sides
-        )
+    def taf(self) -> float:
+        """Sell side only, once per round trip. Uncapped — see EXCLUSIONS."""
+        return self.taf_per_share
 
-    def breakdown(self, price: float) -> dict[str, Any]:
-        return {
-            "sec_per_share": self.sec_per_share(price),
-            "sec_rate_of_notional": self.sec_rate_of_notional,
-            "sec_priced_at": price,
-            "sec_applies": "sell_side_only",
-            "sec_exactness": Exactness.APPROXIMATE.value,
-            "sec_approximation_reason":
-                "sell-side notional priced at entry; the exit price does not "
-                "exist when EV is computed",
-            "taf_per_share": self.taf_per_share,
-            "taf_applies": "sell_side_only",
-            "taf_exactness": Exactness.CONSERVATIVE.value,
-            "taf_cap_per_trade": self.taf_cap_per_trade,
-            "taf_cap_share_threshold": self.taf_cap_share_threshold,
-            "taf_cap_applied": False,
-            "taf_cap_reason":
-                "cap is quantity-dependent and quantity is unknown pre-trade; "
-                "uncapped >= capped, so cost is overstated",
-            "cat_per_share": self.cat_per_share,
-            "cat_sides": self.sides_per_round_trip,
-            "cat_applies": "buy_and_sell",
-            "cat_exactness": Exactness.EXACT.value,
-            "total_per_share": self.per_share(price),
-            "source": self.source.value,
-        }
+    def cat(self) -> float:
+        """Both legs."""
+        return self.cat_per_share * self.sides_per_round_trip
 
 
 @dataclass(frozen=True)
@@ -193,7 +204,34 @@ class Slippage:
     """Never authoritative: no vendor publishes another party's slippage."""
     per_share: float
     source: CostSource
-    assumption: str
+    assumption: str = ""
+
+
+# ==========================================================================
+# Estimate
+# ==========================================================================
+
+@dataclass(frozen=True)
+class CostEstimate:
+    """One priced round trip. Quantity-unaware by construction.
+
+    `per_share` is fees only. Spread is carried separately and added by
+    `total_per_share()`, because a spread is a market observation from the
+    snapshot, not a configured rate — conflating them would let a fee schedule
+    appear to explain a liquidity cost.
+    """
+    direction: str
+    entry: float
+    exit_price: float
+    sell_leg: str                    # "entry" (short) | "exit" (long)
+    sell_price: float
+    components: dict[str, float]
+    quality: dict[str, str]
+    per_share: float                 # fees only, EXCLUDING spread
+    spread: float
+
+    def total_per_share(self) -> float:
+        return self.per_share + self.spread
 
 
 # ==========================================================================
@@ -205,54 +243,113 @@ class CostPolicy:
     commission: Commission
     regulatory: Regulatory
     slippage: Slippage
-    cost_basis: str
     rates_effective_date: str
     rates_source: str
     include_spread: bool = True
     symbol: str | None = None
     override_applied: bool = False
 
-    def per_share_cost(self, price: float) -> float:
-        """Round-trip per-share cost at `price`, EXCLUDING spread.
+    def estimate(
+        self,
+        *,
+        entry: float,
+        take_profit: float,
+        direction: str,
+        spread: float = 0.0,
+    ) -> CostEstimate:
+        """Price one round trip from the proposal geometry.
 
-        Spread is a market observation from the snapshot, not a configured rate.
-        Conflating them would let a fee schedule appear to explain a liquidity cost.
+        `direction` decides which leg is the sell, and therefore where the
+        sell-only SEC and TAF components land and how exactly they can be priced.
         """
-        if price <= 0:
-            raise CostPolicyInvalid(f"price must be positive, got {price}")
-        return (
-            self.commission.per_share(price)
-            + self.regulatory.per_share(price)
-            + self.slippage.per_share
+        side = str(direction).upper()
+        if side not in ("BUY", "SELL"):
+            raise CostPolicyInvalid(
+                f"direction must be 'BUY' or 'SELL', got {direction!r}"
+            )
+        entry = _price(entry, "entry")
+        exit_price = _price(take_profit, "take_profit")
+
+        if side == "SELL":
+            # The entry IS the sell. Its price is known, so SEC is exact.
+            sell_leg, sell_price, sec_quality = "entry", entry, Quality.EXACT
+        else:
+            # The exit is the sell. Priced at take_profit, the upper of the two
+            # modelled outcomes, so SEC is overstated rather than mis-stated.
+            sell_leg, sell_price, sec_quality = "exit", exit_price, Quality.CONSERVATIVE
+
+        components = {
+            "commission": self.commission.cost(entry, exit_price),
+            "sec": self.regulatory.sec(sell_price),
+            "taf": self.regulatory.taf(),
+            "cat": self.regulatory.cat(),
+            "slippage": self.slippage.per_share,
+        }
+        quality = {
+            "sec": sec_quality.value,
+            "taf": Quality.CONSERVATIVE.value,      # cap not applied
+            "cat": Quality.EXACT.value,
+            "daily_rounding": Quality.NOT_MODELLED_UNDERSTATES.value,
+            "overall": OVERALL_QUALITY,
+        }
+        return CostEstimate(
+            direction=side,
+            entry=entry,
+            exit_price=exit_price,
+            sell_leg=sell_leg,
+            sell_price=sell_price,
+            components=components,
+            quality=quality,
+            per_share=sum(components.values()),
+            spread=float(spread) if self.include_spread else 0.0,
         )
 
-    def breakdown(self, price: float, spread: float = 0.0) -> dict[str, Any]:
-        """Provenance carried onto every persisted decision."""
+    def breakdown(self, estimate: CostEstimate) -> dict[str, Any]:
+        """Provenance carried onto every persisted decision.
+
+        Plain JSON-serialisable types only: this is written to the DecisionStore
+        and must survive a round trip through JSONL.
+        """
         return {
-            "model": MODEL_ID,
-            "cost_basis": self.cost_basis,
-            "priced_at": price,
-            "spread": spread,
-            "commission_per_share": self.commission.per_share(price),
-            "commission_model": self.commission.model.value,
-            "commission_value": self.commission.value,
-            "commission_source": self.commission.source.value,
-            "commission_note": self.commission.note,
-            "regulatory": self.regulatory.breakdown(price),
-            "slippage_per_share": self.slippage.per_share,
-            "slippage_source": self.slippage.source.value,
-            "slippage_assumption": self.slippage.assumption,
-            "fixed": self.per_share_cost(price),
+            "model": MODEL_NAME,
             "rates_effective_date": self.rates_effective_date,
             "rates_source": self.rates_source,
+            "direction": estimate.direction,
+            "entry": estimate.entry,
+            "exit_price": estimate.exit_price,
+            "sell_leg": estimate.sell_leg,
+            "sell_price": estimate.sell_price,
+            "components": dict(estimate.components),
+            "quality": dict(estimate.quality),
+            "per_share_fees": estimate.per_share,
+            "spread": estimate.spread,
+            "total_per_share": estimate.total_per_share(),
+            "provenance": {
+                "commission": {
+                    "source": self.commission.source.value,
+                    "assumption": self.commission.assumption,
+                    "per_share": self.commission.per_share,
+                    "rate_of_notional": self.commission.rate_of_notional,
+                },
+                "regulatory": {
+                    "source": self.regulatory.source.value,
+                    "reference": self.regulatory.reference,
+                    "sec_rate_of_notional": self.regulatory.sec_rate_of_notional,
+                    "taf_per_share": self.regulatory.taf_per_share,
+                    "cat_per_share": self.regulatory.cat_per_share,
+                    "sides_per_round_trip": self.regulatory.sides_per_round_trip,
+                    "taf_cap_per_trade": self.regulatory.taf_cap_per_trade,
+                    "taf_cap_applied": False,
+                },
+                "slippage": {
+                    "source": self.slippage.source.value,
+                    "assumption": self.slippage.assumption,
+                    "per_share": self.slippage.per_share,
+                },
+            },
+            "excludes": list(EXCLUSIONS),
             "symbol": self.symbol,
             "override_applied": self.override_applied,
-            "excludes": [
-                "taf_per_trade_cap",
-                "daily_fee_aggregation_and_round_up_to_cent",
-                "exit_price_for_sec_notional",
-                "market_impact",
-            ],
         }
 
 
@@ -281,6 +378,13 @@ def _number(value: Any, name: str) -> float:
     return v
 
 
+def _price(value: Any, name: str) -> float:
+    v = _number(value, name)
+    if v <= 0:
+        raise CostPolicyInvalid(f"{name} must be positive, got {v}")
+    return v
+
+
 def _enum(cls, value: Any, name: str):
     try:
         return cls(value)
@@ -297,33 +401,48 @@ def _text(value: Any, name: str) -> str:
     return s
 
 
+def _provenance(block: Mapping[str, Any], name: str) -> tuple[CostSource, str]:
+    """Resolve a component's source and its stated reasoning.
+
+    An operator assumption without an assumption is rejected: an unexplained
+    number is indistinguishable from a fabricated one, and the whole point of
+    recording provenance is that the two can be told apart later.
+    """
+    source = _enum(CostSource, block["source"], f"{name}.source")
+    assumption = str(block.get("assumption") or "").strip()
+    if source is CostSource.OPERATOR_ASSUMPTION and not assumption:
+        raise CostPolicyInvalid(
+            f"{name}.assumption is required when {name}.source is "
+            "'operator_assumption'. State why the value was chosen; an "
+            "unexplained assumption cannot be audited."
+        )
+    return source, assumption
+
+
 def _commission(block: Any) -> Commission:
     if not isinstance(block, Mapping):
         raise CostPolicyInvalid("commission must be a mapping")
-    _require(block, REQUIRED_COMMISSION, f"'{COST_BLOCK}.commission'")
-    model = _enum(CommissionModel, block["model"], "commission.model")
-    value = _number(block["value"], "commission.value")
-    if model is CommissionModel.NONE and value != 0.0:
-        raise CostPolicyInvalid(
-            "commission.model 'none' requires value 0.0; a non-zero value with "
-            "model 'none' is ambiguous"
-        )
+    _require(block, REQUIRED_COMMISSION, f"'{COST_BLOCK}...commission'")
+    source, assumption = _provenance(block, "commission")
     return Commission(
-        model=model, value=value,
-        source=_enum(CostSource, block["source"], "commission.source"),
-        note=str(block.get("note") or ""),
+        per_share=_number(block["per_share"], "commission.per_share"),
+        rate_of_notional=_number(block["rate_of_notional"],
+                                 "commission.rate_of_notional"),
+        source=source,
+        assumption=assumption,
     )
 
 
 def _regulatory(block: Any) -> Regulatory:
     if not isinstance(block, Mapping):
         raise CostPolicyInvalid("regulatory must be a mapping")
-    _require(block, REQUIRED_REGULATORY, f"'{COST_BLOCK}.regulatory'")
+    _require(block, REQUIRED_REGULATORY, f"'{COST_BLOCK}...regulatory'")
     sides = block["sides_per_round_trip"]
     if isinstance(sides, bool) or not isinstance(sides, int) or sides < 1:
         raise CostPolicyInvalid(
             f"regulatory.sides_per_round_trip must be an integer >= 1, got {sides!r}"
         )
+    source, _ = _provenance(block, "regulatory")
     cap = block.get("taf_cap_per_trade")
     thr = block.get("taf_cap_share_threshold")
     return Regulatory(
@@ -332,7 +451,8 @@ def _regulatory(block: Any) -> Regulatory:
         taf_per_share=_number(block["taf_per_share"], "regulatory.taf_per_share"),
         cat_per_share=_number(block["cat_per_share"], "regulatory.cat_per_share"),
         sides_per_round_trip=sides,
-        source=_enum(CostSource, block["source"], "regulatory.source"),
+        source=source,
+        reference=str(block.get("reference") or ""),
         taf_cap_per_trade=None if cap is None else _number(cap, "taf_cap_per_trade"),
         taf_cap_share_threshold=None if thr is None else int(thr),
     )
@@ -341,8 +461,8 @@ def _regulatory(block: Any) -> Regulatory:
 def _slippage(block: Any) -> Slippage:
     if not isinstance(block, Mapping):
         raise CostPolicyInvalid("slippage must be a mapping")
-    _require(block, REQUIRED_SLIPPAGE, f"'{COST_BLOCK}.slippage'")
-    source = _enum(CostSource, block["source"], "slippage.source")
+    _require(block, REQUIRED_SLIPPAGE, f"'{COST_BLOCK}...slippage'")
+    source, assumption = _provenance(block, "slippage")
     if source is CostSource.AUTHORITATIVE:
         raise CostPolicyInvalid(
             "slippage.source cannot be 'authoritative': no vendor publishes "
@@ -352,7 +472,7 @@ def _slippage(block: Any) -> Slippage:
     return Slippage(
         per_share=_number(block["per_share"], "slippage.per_share"),
         source=source,
-        assumption=_text(block["assumption"], "slippage.assumption"),
+        assumption=assumption,
     )
 
 
@@ -371,27 +491,40 @@ def cost_policy_from_config(
 
     _require(block, REQUIRED_TOP, f"'{COST_BLOCK}'")
 
-    merged: dict[str, Any] = {k: block[k]
-                              for k in ("commission", "regulatory", "slippage")}
+    declared = _text(block["model"], f"{COST_BLOCK}.model")
+    if declared != MODEL_NAME:
+        raise CostPolicyInvalid(
+            f"'{COST_BLOCK}.model' is {declared!r} but this module implements "
+            f"{MODEL_NAME!r}. A configuration written for a different cost model "
+            "would be mispriced silently; resolve the mismatch explicitly."
+        )
+
+    default = block["default"]
+    if not isinstance(default, Mapping):
+        raise CostPolicyInvalid(f"'{COST_BLOCK}.default' must be a mapping")
+
+    # A per-symbol override REPLACES the default wholesale; it never inherits
+    # component-by-component. Silently inheriting half a component under an
+    # override key is the ambiguity this module exists to prevent, so an override
+    # that omits a component fails closed exactly like an incomplete default.
+    source_block: Mapping[str, Any] = default
+    where = f"'{COST_BLOCK}.default'"
     override_applied = False
     overrides = block.get("overrides") or {}
     if symbol and isinstance(overrides, Mapping) and symbol.upper() in overrides:
         ov = overrides[symbol.upper()]
         if not isinstance(ov, Mapping):
             raise CostPolicyInvalid(f"override for {symbol} must be a mapping")
-        # A whole component is replaced, never merged field-by-field: silently
-        # inheriting half a component under an override key is the ambiguity this
-        # module exists to prevent.
-        for comp in ("commission", "regulatory", "slippage"):
-            if comp in ov:
-                merged[comp] = ov[comp]
-                override_applied = True
+        source_block = ov
+        where = f"'{COST_BLOCK}.overrides.{symbol.upper()}'"
+        override_applied = True
+
+    _require(source_block, REQUIRED_COMPONENTS, where)
 
     return CostPolicy(
-        commission=_commission(merged["commission"]),
-        regulatory=_regulatory(merged["regulatory"]),
-        slippage=_slippage(merged["slippage"]),
-        cost_basis=_text(block["cost_basis"], "cost_basis"),
+        commission=_commission(source_block["commission"]),
+        regulatory=_regulatory(source_block["regulatory"]),
+        slippage=_slippage(source_block["slippage"]),
         rates_effective_date=_text(block["rates_effective_date"],
                                    "rates_effective_date"),
         rates_source=_text(block["rates_source"], "rates_source"),

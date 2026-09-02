@@ -1,0 +1,113 @@
+# SpeedTrader AI — Deterministic Risk Configuration
+# Spec §51, §52, §115, §116
+#
+# PROVENANCE: every value below is traced to a line in SpeedTraderBot.mq5 (Bot v6.1).
+# Values marked TRANSLATED had no meaning on Alpaca and were re-derived — the reason
+# is stated inline. Values marked REMOVED are FX-only and deleted, not silently kept.
+#
+# §116: no LLM may modify this file. §117: changes require an explicit engineering action.
+
+version: "1.0"
+engine_version: "v1"
+
+# --------------------------------------------------------------------------
+# Position risk — ported directly
+# --------------------------------------------------------------------------
+risk_per_trade_pct: 1.0          # InpRiskPerTrade = 1.0
+min_size_multiplier: 0.25        # InpMinLotMult   = 0.25
+max_size_multiplier: 1.50        # InpMaxLotMult   = 1.50
+
+# --------------------------------------------------------------------------
+# Account-level halts — ported directly
+# --------------------------------------------------------------------------
+daily_loss_limit_pct: 3.0        # InpDailyLossLimit   = 3.0
+weekly_loss_limit_pct: 6.0       # InpWeeklyLossLimit  = 6.0
+max_consecutive_losses: 6        # InpMaxConsecLosses  = 6
+daily_profit_target_pct: 4.0     # InpDailyProfitTarget= 4.0
+daily_giveback_pct: 1.5          # InpDailyGiveback    = 1.5
+
+# --------------------------------------------------------------------------
+# Portfolio heat — ported directly
+# --------------------------------------------------------------------------
+portfolio_heat_max_pct: 8.0      # InpPortfolioHeatMax = 8.0
+heat_reduce_level_pct: 6.0       # InpHeatReduceLevel  = 6.0 -> triggers x0.5 sizing
+heat_reduce_multiplier: 0.5      # ComputeFinalLot(): if heat >= reduce level, m *= 0.5
+
+# --------------------------------------------------------------------------
+# Exposure caps — TRANSLATED
+# --------------------------------------------------------------------------
+# REMOVED: currency_exposure_max (InpCurrencyExpMax = 4.0).
+#   CurrencyExposure() decomposes risk by base/quote currency. AAPL has neither.
+# REPLACED BY: single-symbol and sector caps, which are the equity analogue.
+max_symbol_exposure_pct: 4.0     # same 4.0 ceiling, now per symbol
+max_sector_exposure_pct: 6.0     # NEW: equities cluster by sector as FX clusters by currency
+max_open_positions: 5
+
+# --------------------------------------------------------------------------
+# Correlation — ported, threshold unchanged
+# --------------------------------------------------------------------------
+correlation_enabled: true        # InpUseCorrelation = true
+correlation_threshold: 0.7       # Correlation() > 0.7 blocks same-direction entry
+correlation_lookback_bars: 30    # Correlation(a,b,n=30)
+
+# --------------------------------------------------------------------------
+# Signal quality gates — ported, ONE VALUE RECALIBRATED
+# --------------------------------------------------------------------------
+# InpMinScore was 55.0. On Alpaca we lose three bonus sources that exist only in FX:
+#   Basket  (+6, CurrencyMomentum across pairs sharing a currency)
+#   Swap    (+3, SYMBOL_SWAP_LONG/SHORT)
+#   Overlap (+5, London/NY session overlap)
+# That removes up to 14 points of achievable bonus while base scores stay 45-55.
+# Holding 55 would produce near-zero signals. Lowered proportionally.
+min_score: 48.0                  # was 55.0 — RECALIBRATED, see note above
+min_score_original_fx: 55.0      # kept for the record
+score_bonus_cap: 30.0            # SCORE_BONUS_CAP
+adaptive_score_penalty: 5.0      # AdaptiveMinScore(): +5 after 2 recent losses
+
+# EV gate. §ComputeEV bootstraps winRate=0.50 when trades < 20, which makes
+# expected_value structurally positive and the gate inert. We keep the gate but
+# flag bootstrap mode explicitly rather than pretending it is filtering.
+require_positive_ev: true
+ev_min_trades_for_live_estimate: 20   # ComputeEV: if(tr<20) assume 0.50
+ev_bootstrap_win_rate: 0.50
+
+# --------------------------------------------------------------------------
+# Execution constraints — TRANSLATED
+# --------------------------------------------------------------------------
+# InpMaxSpreadPips = 4.0 is meaningless for a $231 stock. Converted to relative.
+max_spread_pct: 0.15             # TRANSLATED from 4 pips
+min_reward_risk: 1.5             # derived from InpMinNetRRpips intent
+min_stop_distance_atr: 0.5       # stop must be at least 0.5 ATR away
+
+# --------------------------------------------------------------------------
+# Kelly sizing — ported directly
+# --------------------------------------------------------------------------
+kelly_enabled: true              # InpUseKelly       = true
+kelly_fraction: 0.35             # InpKellyFraction  = 0.35
+kelly_min_trades: 30             # InpDecayMinTrades = 30
+kelly_multiplier_floor: 0.5      # Clamp(1.0+frac, 0.5, 1.5)
+kelly_multiplier_ceiling: 1.5
+
+# --------------------------------------------------------------------------
+# Recovery & decay — ported directly
+# --------------------------------------------------------------------------
+recovery_dd_trigger_pct: 10.0    # InpRecoveryDDTrigger = 10.0
+recovery_risk_multiplier: 0.5    # InpRecoveryRiskMult  = 0.5
+decay_monitor_enabled: true      # InpDecayMonitor      = true
+decay_pf_floor: 0.90             # InpDecayPFFloor      = 0.90
+decay_min_trades: 30             # InpDecayMinTrades    = 30
+symbol_pause_dd_pct: 4.0         # InpSymbolPauseDD     = 4.0
+symbol_pause_hours: 12           # InpSymbolPauseHours  = 12
+
+# --------------------------------------------------------------------------
+# Anomaly guards — ported + one NEW for equities
+# --------------------------------------------------------------------------
+flash_spike_atr: 3.0             # InpFlashSpikeATR = 3.0
+max_gap_pct: 3.0                 # NEW: FX barely gaps; equities gap hard at the open.
+                                 # No Bot v6 equivalent because the risk did not exist.
+
+# --------------------------------------------------------------------------
+# Kill switch — §52
+# --------------------------------------------------------------------------
+kill_switch_enabled: true
+fail_closed: true                # §111/§113: unknown -> no authorization. Never invert.

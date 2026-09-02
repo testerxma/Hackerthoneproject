@@ -1,0 +1,20 @@
+# SpeedTrader AI — Portfolio Configuration (§55, §115)
+version: "1.0"
+
+universe: [AAPL, MSFT, NVDA, AMD, TSLA, SPY]
+max_concurrent_positions: 5
+max_new_positions_per_day: 3
+max_positions_per_symbol: 1        # CountOpen(): "already open (strat+sym)"
+
+# §57 — any material change forces a second pass through the risk engine
+revalidate_on_modification: true
+material_fields: [quantity, entry, stop_loss, take_profit, side]
+
+# US equity session (ET). No Bot v6 equivalent — TimeEngine was built for 24/5 FX.
+session:
+  timezone: "America/New_York"
+  regular_open: "09:30"
+  regular_close: "16:00"
+  no_new_entries_before: "10:00"   # avoid the opening auction
+  no_new_entries_after: "15:30"    # avoid the closing imbalance
+  flatten_before_close_minutes: 10

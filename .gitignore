@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+data/decisions/*.jsonl
+data/snapshots/*
+logs/
+*.db
+.DS_Store

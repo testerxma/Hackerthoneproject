@@ -1,0 +1,29 @@
+# SpeedTrader AI — Model Routing (§97, §98, §99, §100, §101)
+version: "1.0"
+
+provider: anthropic          # §99: replaceable. Any OpenAI-compatible endpoint works.
+
+tiers:
+  fast:      claude-haiku-4-5-20251001
+  reasoning: claude-sonnet-5
+  strongest: claude-opus-5
+
+routing:                     # §98
+  technical_analyst: fast
+  regime_analyst:    fast
+  news_analyst:      fast
+  sentiment_analyst: fast
+  bull_researcher:   reasoning
+  bear_researcher:   reasoning
+  research_manager:  reasoning
+  trader:            reasoning
+  risk_agent:        reasoning
+  portfolio_manager: strongest
+
+temperature: 0.2             # §101 recorded on every AgentReport
+max_tokens: 2000
+timeout_seconds: 60
+retry_budget: 2
+
+structured_output: true      # agent output must validate against schemas.py or fail loudly
+on_parse_failure: fail_closed   # §112: never failure -> guessed BUY

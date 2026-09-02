@@ -1,0 +1,77 @@
+# SpeedTrader AI — Agent Registry & Selection (§25, §27, §28, §105)
+version: "1.0"
+
+selection:
+  strategy: minimal_sufficient   # §28: smallest relevant set, not "as many as possible"
+  always_include: [technical_analyst, regime_analyst]
+  max_agents: 4
+
+agents:
+  technical_analyst:
+    capabilities: [technical]
+    model_tier: fast             # §98
+    reads: [snapshot, features, candidate, memory_context]
+    writes: [technical_report]
+    execution_rights: false      # §106
+    risk_override: false
+  regime_analyst:
+    capabilities: [regime]
+    model_tier: fast
+    reads: [snapshot, features, candidate]
+    writes: [regime_report]
+    execution_rights: false
+    risk_override: false
+  news_analyst:
+    capabilities: [news, event_risk]
+    model_tier: fast
+    reads: [snapshot, news, candidate]
+    writes: [news_report]
+    execution_rights: false
+    risk_override: false
+    trigger_when: [earnings_within_days<=5, macro_event_today]   # §29 dynamic
+  sentiment_analyst:
+    capabilities: [sentiment]
+    model_tier: fast
+    reads: [snapshot, sentiment, candidate]
+    writes: [sentiment_report]
+    execution_rights: false
+    risk_override: false
+  bull_researcher:
+    capabilities: [advocacy]
+    model_tier: reasoning
+    execution_rights: false
+    risk_override: false
+  bear_researcher:
+    capabilities: [adversarial]
+    model_tier: reasoning
+    execution_rights: false
+    risk_override: false
+  research_manager:
+    capabilities: [synthesis]
+    model_tier: reasoning
+    execution_rights: false
+    risk_override: false
+  trader:
+    capabilities: [proposal]
+    model_tier: reasoning
+    writes: [trade_proposal]     # §107: proposal, NOT order
+    execution_rights: false
+    risk_override: false
+  risk_agent:
+    capabilities: [risk_reasoning]
+    model_tier: reasoning
+    execution_rights: false      # §108
+    risk_override: false
+  portfolio_manager:
+    capabilities: [portfolio_decision]
+    model_tier: strongest
+    execution_rights: false      # §109: no direct broker call
+    risk_override: false
+
+# §110 — the ONLY component with execution rights, and it is not an agent.
+execution_adapter:
+  execution_rights: true
+  authorization: approved_validated_decisions_only
+
+debate:
+  max_rounds: 2                  # full adversarial depth

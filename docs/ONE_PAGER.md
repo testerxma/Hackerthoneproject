@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 876 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 895 tests
 
 ---
 
@@ -94,6 +94,13 @@ verification breaks 29 tests; allowing unsafe retries breaks 13.
   not silently mispriced, because the schedule adds $0.50/contract this model does
   not apply.
 - **Paper is forced in three independent places**; live is refused structurally.
+- **Verified live, not only against mocks.** The full stack has placed real
+  orders on a paper account (`SOFI261002C00017000`, `F261002C00013500`). Doing so
+  exposed two bugs mocks could not: Alpaca's 100-symbol quote cap, and a
+  two-level MCP envelope that made a *successful* submission read as `UNKNOWN`.
+  The safety chain then did its job — the adapter refused to claim a fill it
+  could not see, reconciliation found the order `ACCEPTED` at the broker, and
+  the retry was refused. An ambiguous success stayed one order.
 
 ---
 

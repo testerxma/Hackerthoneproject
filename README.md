@@ -2,7 +2,7 @@
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 876 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 895 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -97,7 +97,7 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 876 passed
+python -m pytest -q                          # 895 passed
 ```
 
 | Scenario | Demonstrates |
@@ -260,6 +260,41 @@ without passing every deterministic gate first.
 Paper is forced in three independent places: config, the adapter constructor, and
 the MCP broker. Credentials are never logged, stored on an object, or included in
 an exception.
+
+### Verified against the live API, not just against mocks
+
+The full production stack — strategy, risk engine, options sizing,
+authorization, MCP broker, reconciliation — has been run against a real Alpaca
+paper account and has placed **real option orders**:
+
+```
+F261002C00013500       qty 1  limit 0.98  accepted   coid st-8997ba2ba6cef1a…
+SOFI261002C00017000    qty 1  limit 1.50  accepted   id ffeb8132-de46-4a15-8f26-fe476fcb6995
+```
+
+Doing this found two bugs that no offline test could have found, and both are
+now regression-tested:
+
+1. **Alpaca caps the latest-quote endpoint at 100 symbols.** A 354-contract AAPL
+   chain returned `symbol limit is 100`, so no contract could ever be priced.
+   The adapter *failed closed* — it raised rather than returning a half-priced
+   chain that would have silently narrowed selection to whichever contracts
+   happened to load. Correct behaviour, real bug; quotes are now batched.
+2. **The MCP server nests its reply two levels deep**
+   (`{"_alpaca_mcp_security": …, "data": {"result": <order>}}`). The parser
+   unwrapped only `result`, so a genuinely successful submission was reported
+   `UNKNOWN`.
+
+The second one is what the safety architecture exists for, and it behaved
+exactly as designed under a real failure: the adapter refused to claim a fill it
+could not see, reconciliation queried the broker, found the order `ACCEPTED`,
+and **refused the retry**. An ambiguous success stayed a single order.
+
+Also empirically established: at 1% risk on a $100k account, a single AAPL
+contract (~$2,000) exceeds the risk budget outright, so the tradeable universe
+is the lower-priced names (F, SOFI, PLTR, INTC, T, SNAP, SPY). The sizing model
+declines the rest rather than rounding up to one contract — the failure mode
+that turns a 1% risk rule into a 2% loss.
 
 ---
 

@@ -242,6 +242,47 @@ MUTANTS: list[Mutant] = [
            ("unit/test_options_data_mapping.py",)),
 
     # ==================================================================
+    # Bring your own strategy: the contract is the whole safety story
+    # ==================================================================
+    Mutant("plugin-wrong-sided-stop", "quant/strategies/plugins.py",
+           "        if output.stop_loss >= output.entry:",
+           "        if False:",
+           "a BUY stop above entry is admitted, inverting risk/reward so EV is "
+           "computed from a reward that is really a loss",
+           ("unit/quant",)),
+    Mutant("plugin-nondeterminism-allowed", "quant/strategies/plugins.py",
+           "    if len(identities) > 1:",
+           "    if False:",
+           "a strategy that cannot be replayed is admitted",
+           ("unit/quant",)),
+    Mutant("plugin-determinism-single-trial", "quant/strategies/plugins.py",
+           "DETERMINISM_TRIALS = 3",
+           "DETERMINISM_TRIALS = 1",
+           "one trial cannot observe non-determinism at all",
+           ("unit/quant",)),
+    Mutant("plugin-snapshot-mutation-allowed", "quant/strategies/plugins.py",
+           "    if before != after:",
+           "    if False:",
+           "a strategy may edit the snapshot every other layer reads",
+           ("unit/quant",)),
+    Mutant("plugin-duplicate-ids-allowed", "quant/strategies/plugins.py",
+           "        if item.id in ids:",
+           "        if False:",
+           "two strategies share an id and their journals merge silently",
+           ("unit/quant",)),
+    Mutant("plugin-unstable-order", "quant/strategies/plugins.py",
+           "    for path in sorted(directory.glob(\"*.py\")):",
+           "    for path in directory.glob(\"*.py\"):",
+           "load order becomes filesystem-dependent, so one market state can "
+           "resolve differently on two machines",
+           ("unit/quant",)),
+    Mutant("plugin-validation-skipped", "quant/strategies/plugins.py",
+           "        if validate:\n            problems = validate_strategy(strategy)",
+           "        if False:\n            problems = validate_strategy(strategy)",
+           "strategies load without their contract being checked at all",
+           ("unit/quant",)),
+
+    # ==================================================================
     # The AI layer can only subtract, and its failures change nothing
     # ==================================================================
     Mutant("veto-on-failure", "agents/veto.py",

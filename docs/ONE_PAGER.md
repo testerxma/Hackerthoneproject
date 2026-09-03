@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 905 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 953 tests
 
 ---
 
@@ -74,7 +74,7 @@ resolved by reconciliation against the broker, never by a retry that could
 double-fill — the idempotency key is the same single-use nonce.
 
 Every guard is **mutation-tested by a harness that runs in CI**
-(`scripts/mutation_test.py`, 42 mutants: 40 killed, 0 survived, 2 declared
+(`scripts/mutation_test.py`, 49 mutants: 47 killed, 0 survived, 2 declared
 equivalent with the argument for why). Each mutant is a reviewable edit to real
 source. The harness fails if a declared equivalent is ever killed, or if a
 mutant's anchor disappears in a refactor — so the score cannot be padded. It
@@ -110,6 +110,23 @@ Python's recursion limit.
   unable to fail any other way. The safety chain held throughout: the adapter
   refused to claim a fill it could not see, reconciliation found the order
   `ACCEPTED`, and the retry was refused. An ambiguous success stayed one order.
+
+---
+
+## Bring your own strategy
+
+S07 is a worked example; the product is everything below it. A trader drops one
+file into `strategies/`, runs `strategy_tool.py check`, and inherits all 22 risk
+checks, options sizing, the execution licence, reconciliation and the audit
+trail — while the contract keeps the boundary absolute: **a strategy proposes a
+trade; it cannot size, authorize or place one.**
+
+Validation *runs* the strategy, because every failure that matters is silent: a
+wrong-sided stop (EV computed from a reward that is really a loss), a
+non-deterministic `evaluate` (unreplayable), a mutated snapshot, a duplicate id.
+Each file's SHA-256 travels onto every decision. Seven mutants prove the guards.
+Stated plainly: loading a file executes it, so this enforces the contract, not
+safety from hostile code — but no strategy can reach the broker regardless.
 
 ---
 

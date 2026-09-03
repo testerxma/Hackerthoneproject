@@ -1,8 +1,14 @@
+<img src="docs/assets/speedtrader-banner.png" alt="SpeedTrader AI" width="100%">
+
+<sub><i>Concept banner. The dashboard figures in it are illustrative design
+mock-ups, not results — this project makes no performance claim anywhere. The
+real generated command centre is <code>data/dashboard.html</code>.</i></sub>
+
 # SpeedTrader AI
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 905 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 953 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -97,8 +103,8 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 905 passed
-python scripts/mutation_test.py              # 42 mutants; every guard is load-bearing
+python -m pytest -q                          # 953 passed
+python scripts/mutation_test.py              # 49 mutants; every guard is load-bearing
 ```
 
 | Scenario | Demonstrates |
@@ -266,11 +272,11 @@ Critical logic is **mutation-tested, reproducibly**: each guard is deliberately
 broken and the suite must go red.
 
 ```bash
-python scripts/mutation_test.py          # 42 mutants; runs in CI
+python scripts/mutation_test.py          # 49 mutants; runs in CI
 python scripts/mutation_test.py --list   # see exactly what gets broken
 ```
 
-**40 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
+**47 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
 a precise, reviewable edit to real source — the exact string removed and the
 exact string put in its place — so a reviewer can judge whether breaking it
 should matter, rather than trusting a number.
@@ -363,6 +369,52 @@ that turns a 1% risk rule into a 2% loss.
 
 ---
 
+## Bring your own strategy
+
+S07 is a worked example. The **product is everything below it** — 22
+deterministic risk checks, options sizing against an exactly known maximum loss,
+a single-use execution licence, reconciliation that refuses an unsafe retry, a
+reproducible decision journal, and an AI layer that can only subtract. None of
+that is specific to S07, so a trader with their own edge should inherit all of it
+by writing one file.
+
+```bash
+python scripts/strategy_tool.py new my_edge     # scaffold a documented template
+python scripts/strategy_tool.py check           # validate it
+python scripts/run_live_paper.py --scan --strategies strategies/
+```
+
+> A strategy **proposes** a trade. It cannot size one, authorize one, or place one.
+
+It returns a direction, an entry, a stop, a target and a score — the entire
+vocabulary. It holds no reference to the broker, the risk engine, the
+authorization registry or the account, and is handed a frozen snapshot rather
+than a data client. A score of 999 buys nothing extra: size comes from the risk
+budget divided by what a contract actually costs.
+
+**`check` runs your strategy rather than inspecting it**, because every failure
+that matters here is semantic and silent:
+
+| Refused at load | Because |
+|---|---|
+| Stop on the wrong side of entry | Risk/reward inverts, so EV is computed from a reward that is really a loss |
+| Non-deterministic `evaluate` | Replay re-derives each decision from its snapshot alone — an unreplayable strategy breaks the central claim |
+| Mutating the snapshot | Every layer in one decision reads that same object |
+| Raising instead of declining | Declining is a recorded result; raising is a bug |
+| Duplicate strategy id | Two histories would merge silently |
+
+Each file's SHA-256 travels onto every decision it produces, because a backtest
+is only meaningful against a known version of the logic. All seven guards are
+mutation-tested (`python scripts/mutation_test.py -k plugin`).
+
+**Honest limit:** loading a strategy file *executes* it, and Python has no
+meaningful in-process sandbox — validation enforces the contract, not safety from
+hostile code. Read a third-party strategy as you would any dependency. What *is*
+guaranteed is narrower and true: no strategy can execute a trade, enlarge a
+position, weaken a limit, or bypass the licence. Those paths do not exist.
+
+---
+
 ## What is NOT built
 
 Stated plainly, because a README that implies more than exists is the first thing
@@ -398,7 +450,11 @@ src/speedtrader/
   agents/       veto.py — Bull / Bear / Judge
   llm/          provider abstraction (no vendor SDK above providers/)
   app/          options_orchestrator.py — coordination only
+  quant/strategies/plugins.py    the bring-your-own-strategy contract
+strategies/     drop your own strategy here (gitignored by default)
+scripts/        run_options_demo · run_live_paper · strategy_tool · mutation_test
 docs/decisions/ research and decision records
+docs/assets/    banner
 ```
 
 Provider abstraction is real: `llm/providers/base.py` imports no vendor SDK, so

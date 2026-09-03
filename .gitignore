@@ -16,3 +16,6 @@ data/dashboard.html
 *.egg-info/
 build/
 dist/
+.coverage
+.coverage.*
+htmlcov/

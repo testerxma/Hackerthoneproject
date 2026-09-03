@@ -65,6 +65,9 @@ from speedtrader.execution.reconciliation import (  # noqa: E402
     ReconciliationUnavailable, reconcile_order,
 )
 from speedtrader.llm.providers.deterministic import DeterministicProvider  # noqa: E402
+from speedtrader.quant.strategies.plugins import (  # noqa: E402
+    StrategyContractError, load_directory, strategies_of,
+)
 from speedtrader.quant.strategies.s07 import S07MomentumBreakout  # noqa: E402
 from speedtrader.risk.state import AccountState, PortfolioState  # noqa: E402
 from speedtrader.storage.decision_store import DecisionStore  # noqa: E402
@@ -163,6 +166,20 @@ def open_option_premium(trading) -> float:
     return total
 
 
+def resolve_strategies(directory: str | None):
+    """S07, or the strategies in a directory the operator pointed us at.
+
+    A refused strategy stops the run rather than being skipped: silently
+    trading with fewer strategies than you asked for is worse than not starting.
+    """
+    if not directory:
+        return [S07MomentumBreakout()], "S07 (built in)"
+    loaded = load_directory(directory)
+    if not loaded:
+        raise StrategyContractError(f"no strategies found in {directory}")
+    return strategies_of(loaded), ", ".join(item.id for item in loaded)
+
+
 def run_symbol(symbol: str, args, client: AlpacaClient, exec_cfg, risk_cfg) -> int:
     trading = client.trading
     market = AlpacaMarketData(client)
@@ -216,7 +233,7 @@ def run_symbol(symbol: str, args, client: AlpacaClient, exec_cfg, risk_cfg) -> i
             return 2
 
     orch = OptionsOrchestrator(
-        strategies=[S07MomentumBreakout()],
+        strategies=args.strategy_objects,
         execution_config=exec_cfg,
         risk_config=risk_cfg,
         store=DecisionStore(Path(args.store)),
@@ -296,6 +313,9 @@ def main() -> int:
                     help=f"evaluate the watchlist: {', '.join(DEFAULT_WATCHLIST)}")
     ap.add_argument("--submit", action="store_true",
                     help="ACTUALLY place the order (paper account only)")
+    ap.add_argument("--strategies", metavar="DIR",
+                    help="load strategies from a directory instead of using the "
+                         "built-in S07 (see strategies/README.md)")
     ap.add_argument("--allow-stale", action="store_true",
                     help="inspect the pipeline outside market hours. REFUSED "
                          "with --submit: a stale bar must never become an order")
@@ -324,9 +344,16 @@ def main() -> int:
         say(f"{C['r']}refusing to run against a live account{C['0']}")
         return 2
 
+    try:
+        args.strategy_objects, strategy_names = resolve_strategies(args.strategies)
+    except StrategyContractError as e:
+        say(f"{C['r']}{e}{C['0']}")
+        return 2
+
     client = AlpacaClient(creds)
     rule("SPEEDTRADER AI — LIVE PAPER RUN")
     say(f"  credentials    {creds.redacted()}")
+    say(f"  strategies     {strategy_names}")
     say(f"  mode           {C['b']}"
         f"{'SUBMIT — real orders will be placed' if args.submit else 'DRY RUN — no broker reference is held'}"
         f"{C['0']}")

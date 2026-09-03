@@ -45,6 +45,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# The dashboard is an OBSERVER. "What did the system decide" is worked out in
+# the domain layer and unit-tested there; this file only formats the answer.
+from speedtrader.replay.inspector import (  # noqa: E402
+    Authority, StageState, evidence_for, inspect as inspect_decision,
+)
+
 # ---------------------------------------------------------------- palette
 BG        = "#05070d"
 SURFACE   = "#0b0f19"
@@ -398,13 +404,147 @@ def decision_card(d: dict, index: int) -> str:
         {pipeline_html(d)}
         <div class="reason">{esc(d.get("rejection_reason") or "authorized")}</div>
         {lanes}
+        <div class="sec-t">DECISION INSPECTOR — WHO DECIDED, AND WHERE IT STOPPED</div>
+        {inspector_html(d)}
+        {debate_html(d)}
         <div class="sec-t">MARKET STATE</div>{market}
         {f'<div class="sec-t">QUANTITATIVE SIGNAL</div>{quant}' if quant else ''}
         {f'<div class="sec-t">OPTIONS CONTRACT</div>{opt_html}' if opt_html else ''}
         {checks_html}
+        {evidence_html(d)}
         {rej_html}
       </div>
     </details>"""
+
+
+AUTHORITY_COLOUR = {
+    Authority.ADVISORY: PURPLE,        # can subtract, never authorize
+    Authority.DETERMINISTIC: BLUE,     # the only thing that authorizes
+    Authority.BROKER: CYAN,            # external truth
+    Authority.DATA: MUTED,
+}
+STATE_COLOUR = {
+    StageState.PASSED: GREEN,
+    StageState.BLOCKED: RED,
+    StageState.NOT_REACHED: DIM,
+    StageState.NOT_BUILT: AMBER,
+    StageState.OBSERVED: CYAN,
+}
+
+
+def inspector_html(d: dict) -> str:
+    """Stage-by-stage causal chain, with the authority class of each stage.
+
+    The point a judge must not be able to miss: an ADVISORY stage can stop a
+    trade but can never start one, and only a DETERMINISTIC stage authorizes.
+    """
+    try:
+        result = inspect_decision(d)
+    except Exception:
+        return '<div class="empty">This decision record could not be inspected.</div>'
+
+    rows = []
+    for st in result.stages:
+        acol = AUTHORITY_COLOUR.get(st.authority, MUTED)
+        scol = STATE_COLOUR.get(st.state, MUTED)
+        label = str(st.state).replace("_", " ")
+        rows.append(f"""<div class="stg" style="--a:{acol};--s:{scol}">
+          <div class="stg-a">{esc(str(st.authority))}</div>
+          <div class="stg-l">{esc(st.label)}</div>
+          <div class="stg-s">{badge(label, scol)}</div>
+          <div class="stg-m">{esc(st.summary)}
+            {f'<span class="code">{esc(st.reason_code)}</span>' if st.reason_code else ''}
+          </div>
+          <div class="stg-t mono sm muted">{esc((st.timestamp or '')[11:19])}</div>
+        </div>""")
+
+    blocked = result.blocked_at
+    verdict = (f'Stopped at <b>{esc(blocked.label)}</b> by the '
+               f'<b>{esc(result.authority_that_stopped_it)}</b> layer'
+               + (f' — <span class="code">{esc(result.reason_code)}</span>'
+                  if result.reason_code else '')
+               ) if blocked else "Authorized — every stage passed"
+
+    return f"""<div class="inspector">
+      <div class="insp-h">{verdict}</div>
+      {''.join(rows)}
+      <div class="legend">
+        <span style="color:{PURPLE}">■ advisory</span> can veto, never authorizes ·
+        <span style="color:{BLUE}">■ deterministic</span> the only execution authority ·
+        <span style="color:{CYAN}">■ broker</span> observed, not decided
+      </div>
+    </div>"""
+
+
+def debate_html(d: dict) -> str:
+    """Bull vs Bear, structured — arguments and concerns, not a chat transcript.
+
+    The purpose is to show the system actively looking for reasons NOT to trade.
+    """
+    review = get(d, "ai_review") or {}
+    bull, bear = review.get("bull"), review.get("bear")
+    if not isinstance(bull, dict) and not isinstance(bear, dict):
+        return ""
+
+    def side(name, data, colour):
+        if not isinstance(data, dict):
+            return f'<div class="lane" style="--c:{DIM}"><div class="lane-h">{name}</div>' \
+                   f'<div class="muted sm">not recorded</div></div>'
+        concerns = "".join(f"<li>{esc(c)}</li>"
+                           for c in (data.get("concerns") or [])[:6])
+        return f"""<div class="lane" style="--c:{colour}">
+          <div class="lane-h">{name}</div>
+          <div class="lane-v">{esc(data.get('verdict', '?'))}
+            <span class="muted sm">confidence {esc(data.get('confidence', '—'))}</span>
+          </div>
+          <div class="lane-s">{esc((data.get('reasoning') or '')[:240])}</div>
+          {f'<ul class="concerns">{concerns}</ul>' if concerns else ''}
+        </div>"""
+
+    judge = review.get("judge") or {}
+    return f"""<div class="sec-t">ADVERSARIAL RESEARCH — BULL VS BEAR</div>
+    <div class="lanes">
+      {side("BULL CASE", bull, GREEN)}
+      {side("BEAR CASE", bear, RED)}
+    </div>
+    <div class="judgement">
+      <b>JUDGE</b> {badge(str(judge.get('verdict', '?')), PURPLE)}
+      <span class="muted">{esc((judge.get('reasoning') or '')[:200])}</span>
+    </div>"""
+
+
+def evidence_html(d: dict) -> str:
+    """Every checkable claim behind the decision, with what was observed.
+
+    No news or sentiment sources are listed, because this system has none. A
+    fabricated source count would be worse than an honest, smaller list of
+    claims that can actually be verified.
+    """
+    items = evidence_for(d)
+    if not items:
+        return ""
+    def _support_cell(supports: bool) -> str:
+        return badge("supports" if supports else "contradicts",
+                     GREEN if supports else RED)
+
+    rows = "".join(
+        "<tr><td class='mono sm'>{eid}</td><td>{claim}</td>"
+        "<td class='muted sm'>{source}</td><td class='mono sm'>{observed}</td>"
+        "<td>{support}</td></tr>".format(
+            eid=esc(e["evidence_id"]), claim=esc(e["claim"]),
+            source=esc(e["source"]), observed=esc(e["observed"]),
+            support=_support_cell(bool(e["supports"])))
+        for e in items)
+    supporting = sum(1 for e in items if e["supports"])
+    return f"""<details class="sub"><summary>Evidence &amp; provenance
+      <span class="muted">({supporting} supporting / {len(items) - supporting}
+      contradicting — all computed, all verifiable)</span></summary>
+      <table class="mini"><thead><tr><th>id</th><th>claim</th><th>source</th>
+      <th>observed</th><th></th></tr></thead><tbody>{rows}</tbody></table>
+      <div class="note">No news, sentiment or fundamental evidence layer exists
+      in this system, so none is listed. Every row above is a value the
+      deterministic engine actually computed and can be recomputed from the
+      stored snapshot.</div></details>"""
 
 
 ORDER_COLOURS = {
@@ -482,6 +622,124 @@ _LAYER_LABELS = {
 }
 
 
+def health_html(account: dict | None, intents: list[dict],
+                decisions: list[dict], journal_dir: Path) -> str:
+    """Operational health, derived from what was actually checked.
+
+    A component is only HEALTHY if this build verified it. Anything unverified
+    is UNKNOWN, never optimistically green — a status panel that guesses is
+    worse than no status panel, because it is trusted.
+    """
+    rows: list[tuple[str, str, str, str]] = []
+
+    def add(name, state, colour, detail):
+        rows.append((name, state, colour, detail))
+
+    # Broker: verified only if an account was actually fetched this build.
+    if account:
+        add("Broker connectivity", "CONNECTED", GREEN,
+            f"account {account['account_number']} · paper")
+    else:
+        add("Broker connectivity", "UNKNOWN", MUTED,
+            "not contacted by this build; no figures shown")
+
+    # Journal: verified by reading it.
+    jpath = Path(journal_dir) / "execution_intents.jsonl"
+    if jpath.exists():
+        add("Execution journal", "HEALTHY", GREEN,
+            f"{len(intents)} intent(s) readable at {jpath.name}")
+    else:
+        add("Execution journal", "EMPTY", MUTED,
+            "no execution attempt recorded yet")
+
+    # Reconciliation: an unresolved intent is the state that blocks trading.
+    unresolved = [i for i in intents
+                  if str(i.get("phase")) in {"attempted", "unknown", "submitted"}]
+    seen: dict[str, str] = {}
+    for i in intents:
+        seen[str(i.get("client_order_id"))] = str(i.get("phase"))
+    pending = [c for c, ph in seen.items()
+               if ph in {"attempted", "unknown", "submitted"}]
+    if not intents:
+        add("Reconciliation", "CLEAR", GREEN, "nothing to reconcile")
+    elif pending:
+        add("Reconciliation", "PENDING", AMBER,
+            f"{len(pending)} intent(s) unresolved — the runtime refuses to "
+            f"trade until these are settled")
+    else:
+        add("Reconciliation", "CLEAR", GREEN, "every intent settled")
+    _ = unresolved
+
+    # Kill switch: a file. Present means engaged.
+    switch = Path(journal_dir) / "STOP"
+    if switch.exists():
+        add("Kill switch", "ENGAGED", RED, f"{switch} present — runtime will stop")
+    else:
+        add("Kill switch", "ARMED", GREEN, "not triggered; touch data/STOP to stop")
+
+    # Decision journal.
+    add("Decision journal", "HEALTHY" if decisions else "EMPTY",
+        GREEN if decisions else MUTED,
+        f"{len(decisions)} decision(s) persisted and replayable")
+
+    # Deterministic risk engine — always authoritative, by construction.
+    add("Deterministic risk engine", "AUTHORITATIVE", BLUE,
+        "sole source of execution authority; cannot be overridden by the AI")
+
+    # AI provider: only claim it ran if a decision recorded a model.
+    models = {str(get(d, "ai_review", "judge", "provenance", "model") or "")
+              for d in decisions}
+    models.discard("")
+    if models:
+        add("AI provider", "AVAILABLE", PURPLE,
+            f"model(s): {', '.join(sorted(models)[:3])} · advisory only")
+    else:
+        add("AI provider", "NOT CONSULTED", MUTED,
+            "no model recorded — identical outcome to an abstention")
+
+    body = "".join(
+        f"<tr><td>{esc(n)}</td><td>{badge(st, c)}</td>"
+        f"<td class='muted sm'>{esc(dt)}</td></tr>"
+        for n, st, c, dt in rows)
+    return f"""<table class="tbl"><tbody>{body}</tbody></table>
+      <div class="note">A component is HEALTHY only if this build actually
+      verified it. Anything unverified reads UNKNOWN — a status panel that
+      guesses is worse than none, because it gets trusted.</div>"""
+
+
+def audit_html(decisions: list[dict]) -> str:
+    """Fingerprints, and what they do and do not cover."""
+    if not decisions:
+        return ""
+    rows = []
+    for d in decisions[-8:][::-1]:
+        try:
+            result = inspect_decision(d)
+        except Exception:
+            continue
+        ai = result.ai
+        rows.append(
+            f"<tr><td class='mono sm'>{esc(result.fingerprint)}</td>"
+            f"<td class='mono'>{esc(result.symbol)}</td>"
+            f"<td>{badge(str(ai.get('verdict') or 'not consulted'), PURPLE)}</td>"
+            "<td>{}</td></tr>".format(
+                badge("YES" if ai.get("changed_outcome") else "NO",
+                      RED if ai.get("changed_outcome") else GREEN)))
+    return f"""<table class="tbl"><thead><tr><th>decision fingerprint</th>
+      <th>symbol</th><th>AI verdict</th><th>AI changed outcome</th></tr></thead>
+      <tbody>{''.join(rows)}</tbody></table>
+      <div class="note">The fingerprint covers the <b>deterministic</b> decision
+      only — market state, quant output, risk verdict and sizing. The AI review
+      is excluded <i>by construction</i>, so the same market state hashes
+      identically whether the model confirmed, abstained, timed out or was never
+      called. That is the non-interference claim reduced to comparing two
+      strings, and <code>--replay</code> re-derives every stored decision from
+      its snapshot with the model absent.
+      <br><b>Not claimed:</b> deterministic replay of an LLM response. A model
+      is not reproducible, which is precisely why nothing it emits is inside the
+      hash.</div>"""
+
+
 def why_no_trade_html(decisions: list[dict]) -> str:
     """Attribute every declined decision to the layer that stopped it.
 
@@ -520,8 +778,9 @@ def why_no_trade_html(decisions: list[dict]) -> str:
 # ---------------------------------------------------------------- page
 def build(decisions: list[dict], *, simulated: bool,
           account: dict | None = None, intents: list[dict] | None = None,
-          health: dict | None = None) -> str:
+          health: dict | None = None, journal_dir: Path | None = None) -> str:
     intents = intents or []
+    journal_dir = Path(journal_dir) if journal_dir else (ROOT / "data")
     total = len(decisions)
     accepted = sum(1 for d in decisions if _accepted(d))
     vetoed = sum(1 for d in decisions if get(d, "ai_review", "vetoed"))
@@ -550,9 +809,9 @@ def build(decisions: list[dict], *, simulated: bool,
         Account figures are omitted rather than estimated or carried over from a
         previous run.</div>"""
 
-    health_html = ""
+    runtime_html = ""
     if health:
-        health_html = f"""<div class="grid4">
+        runtime_html = f"""<div class="grid4">
           {stat("RUNTIME", esc(health.get("state", "idle")).upper())}
           {stat("CYCLES", esc(health.get("cycles_completed", 0)))}
           {stat("ORDERS SENT", esc(health.get("orders_submitted", 0)))}
@@ -691,6 +950,33 @@ details.sub[open] summary{{border-bottom:1px solid {BORDER};color:{BLUE}}}
 .bar-f{{height:100%;border-radius:5px;background:linear-gradient(90deg,{BLUE},{PURPLE})}}
 .bar-n{{width:36px;text-align:right;font-size:12px;color:{TEXT};flex:none}}
 
+/* ---- decision inspector */
+.inspector{{border:1px solid {BORDER};border-radius:9px;background:{SURFACE_2};
+  overflow:hidden;margin-bottom:4px}}
+.insp-h{{padding:10px 13px;border-bottom:1px solid {BORDER};font-size:12.5px;
+  background:linear-gradient(90deg,{BLUE}0d,transparent)}}
+.stg{{display:grid;grid-template-columns:96px 1fr 92px 2fr 64px;gap:10px;
+  align-items:center;padding:8px 13px;border-bottom:1px solid {BORDER};
+  border-left:3px solid var(--a);font-size:12px}}
+.stg:last-of-type{{border-bottom:none}}
+.stg-a{{font-size:9px;font-weight:700;letter-spacing:.9px;color:var(--a);
+  text-transform:uppercase}}
+.stg-l{{font-weight:600}}
+.stg-m{{color:{MUTED};line-height:1.45}}
+.stg-t{{text-align:right}}
+.code{{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:10.5px;color:{AMBER};background:{AMBER}14;border:1px solid {AMBER}33;
+  border-radius:4px;padding:1px 5px;margin-left:6px}}
+.legend{{padding:9px 13px;font-size:11px;color:{DIM};border-top:1px solid {BORDER};
+  background:{SURFACE}}}
+.concerns{{margin:8px 0 0 16px;padding:0;font-size:11.5px;color:{MUTED};
+  line-height:1.6}}
+.judgement{{margin-top:10px;padding:10px 13px;border:1px solid {PURPLE}33;
+  border-radius:8px;background:{PURPLE}0d;font-size:12px;
+  display:flex;gap:9px;align-items:center;flex-wrap:wrap}}
+@media(max-width:900px){{.stg{{grid-template-columns:1fr;gap:4px}}
+  .stg-t{{text-align:left}}}}
+
 footer{{margin-top:34px;padding-top:20px;border-top:1px solid {BORDER};
   font-size:11.5px;color:{DIM};line-height:1.75}}
 @media(max-width:640px){{.wrap{{padding:16px 13px 60px}}
@@ -720,7 +1006,7 @@ footer{{margin-top:34px;padding-top:20px;border-top:1px solid {BORDER};
   {acct_html}
 </div>
 
-{f'<div class="panel"><div class="sec">Autonomous runtime health</div>{health_html}</div>' if health_html else ''}
+{f'<div class="panel"><div class="sec">Autonomous runtime health</div>{runtime_html}</div>' if runtime_html else ''}
 
 <div class="panel">
   <div class="sec">Decision summary</div>
@@ -731,6 +1017,11 @@ footer{{margin-top:34px;padding-top:20px;border-top:1px solid {BORDER};
           sub="the one thing the AI can change")}
     {stat("SYMBOLS", str(len(symbols)), sub=esc(", ".join(symbols[:6])))}
   </div>
+</div>
+
+<div class="panel">
+  <div class="sec">System health</div>
+  <div class="scroll">{health_html(account, intents, decisions, journal_dir)}</div>
 </div>
 
 <div class="panel">
@@ -748,6 +1039,11 @@ footer{{margin-top:34px;padding-top:20px;border-top:1px solid {BORDER};
   evidence that an order may exist. <b>SUBMITTED is never FILLED</b>; only
   reconciliation against the broker resolves an ambiguous outcome, and an
   unresolved intent blocks the next run rather than risking a duplicate.</div>
+</div>
+
+<div class="panel">
+  <div class="sec">Reproducibility &amp; audit</div>
+  <div class="scroll">{audit_html(decisions)}</div>
 </div>
 
 <div class="panel">
@@ -787,7 +1083,8 @@ def main() -> int:
     simulated = any(str(d.get("symbol", "")).upper().startswith("DEMO")
                     for d in decisions) and not account
 
-    page = build(decisions, simulated=simulated, account=account, intents=intents)
+    page = build(decisions, simulated=simulated, account=account,
+                 intents=intents, journal_dir=Path(args.journal))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")

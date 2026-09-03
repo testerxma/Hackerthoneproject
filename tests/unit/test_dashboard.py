@@ -183,8 +183,13 @@ def test_the_same_layer_is_never_split_across_two_rows():
         decision(state="REJECTED", rejection_stage="risk_engine"),
     ]
     page = dash.build(decisions, simulated=True)
-    assert page.count("deterministic risk engine") == 1
-    assert "REJECTED_BY_RISK_ENGINE" not in page
+    # Scoped to the attribution chart: the phrase legitimately appears
+    # elsewhere now (stage labels in the decision inspector), and the property
+    # under test is specifically that ONE layer produces ONE bar.
+    chart = page.split("Why we did NOT trade")[1].split("</div>\n</div>")[0]
+    assert chart.count('class="bar-l"') == 1, "one layer must be one bar"
+    assert "deterministic risk engine" in chart
+    assert "REJECTED_BY_RISK_ENGINE" not in chart
 
 
 def test_a_signal_that_never_fired_blames_quant_not_the_data_layer():
@@ -335,3 +340,188 @@ def test_no_credential_value_can_reach_the_page(monkeypatch):
     assert fake_secret not in page
     # The account number is the only account identifier that may be shown.
     assert ACCOUNT["account_number"] in page
+
+
+# ============================================ decision inspector
+# The panel a judge reads to answer "who decided this, and where did it stop".
+
+def test_the_inspector_labels_the_three_authority_classes():
+    page = dash.build([decision()], simulated=True)
+    assert "advisory" in page and "deterministic" in page and "broker" in page
+    assert "can veto, never authorizes" in page
+    assert "the only execution authority" in page
+
+
+def test_a_veto_is_attributed_to_the_advisory_layer_not_the_risk_engine():
+    """The single most consequential thing a judge could misread."""
+    page = dash.build([decision(state="REJECTED", ai_review={
+        "vetoed": True, "judge": {"verdict": "VETO", "reasoning": "x"}})],
+        simulated=True)
+    assert "stopped at" in page.lower()
+    assert "advisory" in page
+
+
+def test_the_inspector_shows_the_exact_deterministic_reason_code():
+    page = dash.build([decision(state="REJECTED", risk_gate={
+        "verdict": "REJECT",
+        "checks": [{"rule": "portfolio_heat", "passed": False, "observed": 0.9}]})],
+        simulated=True)
+    assert "PORTFOLIO_HEAT" in page, "the exact rule, never a paraphrase"
+
+
+def test_stages_after_a_block_render_as_not_reached():
+    page = dash.build([decision(state="REJECTED", ai_review={
+        "vetoed": True, "judge": {"verdict": "VETO"}})], simulated=True)
+    assert "not reached" in page
+
+
+def test_an_unbuilt_stage_is_labelled_rather_than_silently_omitted():
+    page = dash.build([decision(ai_review=None)], simulated=True)
+    assert "not built" in page
+
+
+# ============================================ bull vs bear
+
+def test_the_debate_panel_shows_both_sides_and_their_concerns():
+    page = dash.build([decision(ai_review={
+        "vetoed": False,
+        "judge": {"verdict": "CONFIRM", "reasoning": "ok"},
+        "bull": {"verdict": "CONFIRM", "confidence": 0.8, "reasoning": "breakout",
+                 "concerns": []},
+        "bear": {"verdict": "ABSTAIN", "confidence": 0.4, "reasoning": "vol",
+                 "concerns": ["elevated volatility", "thin book"]}})],
+        simulated=True)
+    assert "BULL CASE" in page and "BEAR CASE" in page
+    assert "elevated volatility" in page and "thin book" in page
+
+
+def test_the_debate_panel_is_absent_when_no_debate_was_run():
+    """Better absent than an empty box implying a debate happened."""
+    page = dash.build([decision()], simulated=True)
+    assert "BULL CASE" not in page
+
+
+def test_a_hostile_bear_concern_cannot_inject_markup():
+    page = dash.build([decision(ai_review={
+        "vetoed": False, "judge": {"verdict": "CONFIRM"},
+        "bear": {"verdict": "VETO", "concerns": ["<script>x()</script>"]}})],
+        simulated=True)
+    assert "<script>x()</script>" not in page
+
+
+# ============================================ evidence
+
+def test_every_risk_check_appears_as_verifiable_evidence():
+    page = dash.build([decision()], simulated=True)
+    assert "Evidence &amp; provenance" in page
+    assert "chk-00" in page
+
+
+def test_evidence_states_plainly_that_no_news_layer_exists():
+    """A fabricated source count would be worse than an honest absence."""
+    page = dash.build([decision()], simulated=True)
+    assert "No news, sentiment or fundamental evidence layer exists" in page
+
+
+def test_evidence_shows_what_was_observed_not_just_a_verdict():
+    page = dash.build([decision(risk_gate={"verdict": "PASS", "checks": [
+        {"rule": "spread", "passed": True, "observed": 0.0123}]})], simulated=True)
+    assert "0.0123" in page
+
+
+def test_a_hostile_check_rule_cannot_inject_through_the_evidence_table():
+    page = dash.build([decision(risk_gate={"verdict": "PASS", "checks": [
+        {"rule": "<img src=x onerror=alert(1)>", "passed": True,
+         "observed": 1}]})], simulated=True)
+    assert "<img src=x" not in page
+
+
+# ============================================ still no JavaScript
+
+def test_the_new_panels_add_no_javascript():
+    """Every new panel is CSS-only. This is a security property, not a style."""
+    page = dash.build([decision(ai_review={
+        "vetoed": True,
+        "judge": {"verdict": "VETO", "reasoning": "r"},
+        "bull": {"verdict": "CONFIRM", "concerns": ["a"]},
+        "bear": {"verdict": "VETO", "concerns": ["b"]}})],
+        simulated=False, account=ACCOUNT,
+        intents=[{"client_order_id": "x", "phase": "submitted"}])
+    for bad in ("<script", "http://", "https://", "onerror=", "onclick=",
+                "javascript:"):
+        assert bad not in page, f"page reaches for {bad}"
+
+
+# ============================================ system health
+# A status panel that guesses is worse than none, because it gets trusted.
+
+def test_an_uncontacted_broker_is_unknown_not_healthy(tmp_path):
+    page = dash.build([decision()], simulated=False, account=None,
+                      journal_dir=tmp_path)
+    assert "UNKNOWN" in page
+    assert "not contacted by this build" in page
+
+
+def test_a_contacted_broker_reports_connected_with_the_account_number(tmp_path):
+    page = dash.build([decision()], simulated=False, account=ACCOUNT,
+                      journal_dir=tmp_path)
+    assert "CONNECTED" in page
+    assert ACCOUNT["account_number"] in page
+
+
+def test_an_unresolved_intent_is_reported_as_pending_not_clear(tmp_path):
+    """This is the state that blocks the next run; it must be visible."""
+    page = dash.build([decision()], simulated=False, journal_dir=tmp_path,
+                      intents=[{"client_order_id": "st-a", "phase": "unknown"}])
+    assert "PENDING" in page
+    assert "refuses to trade until these are settled" in page
+
+
+def test_a_settled_intent_reports_clear(tmp_path):
+    page = dash.build([decision()], simulated=False, journal_dir=tmp_path,
+                      intents=[{"client_order_id": "st-a", "phase": "attempted"},
+                               {"client_order_id": "st-a", "phase": "reconciled"}])
+    assert "every intent settled" in page
+
+
+def test_the_kill_switch_reports_engaged_when_the_file_exists(tmp_path):
+    (tmp_path / "STOP").write_text("")
+    page = dash.build([decision()], simulated=False, journal_dir=tmp_path)
+    assert "ENGAGED" in page
+
+
+def test_the_kill_switch_reports_armed_when_absent(tmp_path):
+    page = dash.build([decision()], simulated=False, journal_dir=tmp_path)
+    assert "ARMED" in page
+
+
+def test_the_risk_engine_is_always_described_as_authoritative(tmp_path):
+    page = dash.build([decision()], simulated=False, journal_dir=tmp_path)
+    assert "AUTHORITATIVE" in page
+    assert "cannot be overridden by the AI" in page
+
+
+def test_an_unconsulted_ai_is_not_reported_as_available(tmp_path):
+    page = dash.build([decision(ai_review=None)], simulated=False,
+                      journal_dir=tmp_path)
+    assert "NOT CONSULTED" in page
+
+
+# ============================================ audit / reproducibility
+
+def test_the_audit_panel_states_what_the_fingerprint_excludes():
+    page = dash.build([decision()], simulated=True)
+    assert "excluded" in page and "by construction" in page
+
+
+def test_the_audit_panel_refuses_to_claim_deterministic_llm_replay():
+    """Claiming a reproducible model would be the easiest lie to tell here."""
+    page = dash.build([decision()], simulated=True)
+    assert "Not claimed:" in page
+    assert "deterministic replay of an LLM response" in page
+
+
+def test_the_audit_panel_marks_a_veto_as_the_ai_changing_the_outcome():
+    page = dash.build([decision(state="REJECTED", ai_review={
+        "vetoed": True, "judge": {"verdict": "VETO"}})], simulated=True)
+    assert "AI changed outcome" in page

@@ -306,10 +306,13 @@ a reviewer catches:
 - **S01–S14** — only **S07** is ported. Inventing the others would violate the
   quant integrity rule that formulas come from the source, not from a model.
 - **Vertical spreads** — declared as `VERTICAL_DEBIT` and *explicitly refused*
-  rather than silently downgraded. Evaluated and rejected for this submission:
-  a two-leg order can leg out and leave an unhedged position, and spreads need a
-  higher options approval level that could make the demo fail on the operator's
-  actual account. Reliability before feature count.
+  rather than silently downgraded. Evaluated and rejected for this submission on
+  one ground only: a two-leg order can leg out, so the maximum loss is **not**
+  exactly known at submission — and sizing against an exactly known maximum loss
+  is the whole reason long single-leg was chosen. (An earlier draft also cited
+  options approval level; the paper account is level 3, so that reason was
+  wrong and has been removed rather than left standing.) Reliability before
+  feature count.
 - **Greeks** — Alpaca exposes them; selection is by moneyness and DTE, which are
   exact and need no pricing model. No delta target is claimed.
 - **Memory / reflection / outcome analysis** — the decision journal provides the

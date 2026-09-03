@@ -136,9 +136,9 @@ modules.
 
 Specification parity with MT5, **not** runtime-verified parity (ADX/DI
 normalisation is undocumented and untested against a live terminal). Only S07 of
-S01–S14 is ported. Vertical spreads are declared and explicitly refused — a
-two-leg order can leg out, and spreads need a higher approval level than the demo
-can rely on. Greeks and memory are not built. The backtest measures the
+S01–S14 is ported. Vertical spreads are declared and explicitly refused: a
+two-leg order can leg out, so max loss is not exactly known at submission — the
+one property long single-leg was chosen for. Greeks and memory are not built. The backtest measures the
 underlying signal, never options P&L. **No P&L claim is made anywhere** — paper
 trading is a simulation.
 

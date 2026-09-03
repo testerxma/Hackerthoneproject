@@ -45,10 +45,19 @@ def decision(**kw):
                                   "observed": 0.0}]},
         "options_trace": {"structure": "long_single",
                           "contract": {"symbol": "SPY260930C00600000",
-                                       "strike": 600.0,
-                                       "expiration": "2026-09-30"},
-                          "sizing": {"contracts": 3, "max_loss_total": 960.0},
-                          "estimated_fees": {"model": "per_contract", "total": 2.4}},
+                                       "type": "call", "strike": 600.0,
+                                       "expiration": "2026-09-30",
+                                       "multiplier": 100, "open_interest": 800,
+                                       "bid": 3.0, "ask": 3.2},
+                          "selection": {"considered": 3,
+                                        "reason": "nearest-the-money call at "
+                                                  "strike 600 vs spot 600"},
+                          "sizing": {"contracts": 3, "premium_per_contract": 3.2,
+                                     "max_loss_per_contract": 320.0,
+                                     "max_loss_total": 960.0,
+                                     "risk_budget": 1000.0, "caps_applied": []},
+                          "estimated_fees": {"model": "per_contract",
+                                             "total": 2.4}},
         "ai_review": {"vetoed": False, "prompt_version": "veto-v1",
                       "judge": {"verdict": "CONFIRM", "confidence": 0.7,
                                 "reasoning": "no disqualifying reason",
@@ -241,3 +250,77 @@ def test_stale_market_data_is_evidence_that_does_not_support():
     d["snapshot"]["source"]["freshness"] = "stale"
     snap = next(e for e in evidence_for(d) if e["evidence_id"] == "snap-00")
     assert snap["supports"] is False
+
+
+# ============================================ options opportunity inspector
+# Options are the hackathon's core requirement, so "why THIS contract" has to be
+# answerable from stored data alone — and the max-loss figure has to stay true.
+
+from speedtrader.replay.inspector import option_detail  # noqa: E402
+
+
+def test_derived_option_fields_are_computed_not_stored():
+    """One source of truth: mid, spread and DTE are recomputed from bid/ask and
+    the expiry rather than persisted a second time where they could drift."""
+    o = option_detail(decision())
+    assert o["mid"] == pytest.approx(3.10)
+    assert o["spread"] == pytest.approx(0.20)
+    assert o["spread_pct"] == pytest.approx(0.20 / 3.10 * 100)
+
+
+def test_dte_is_measured_from_the_snapshot_not_from_today():
+    """A replayed decision must report the DTE it actually faced."""
+    o = option_detail(decision())
+    assert o["dte"] == 27
+
+
+def test_max_loss_all_in_includes_the_fees():
+    """The headline number a reader trusts must be what the position can lose."""
+    o = option_detail(decision())
+    assert o["max_loss_total"] == 960.0
+    assert o["estimated_fees"] == 2.4
+    assert o["max_loss_all_in"] == pytest.approx(962.4)
+
+
+def test_max_profit_is_never_quantified_for_a_long_call():
+    """A big number beside an exact max loss invites a false expectation."""
+    o = option_detail(decision())
+    assert "unbounded" in o["max_profit"]
+    assert not isinstance(o["max_profit"], (int, float))
+
+
+def test_the_contract_is_recorded_as_priced_at_the_ask():
+    """Sizing against the mid would understate the cost and make the max-loss
+    figure untrue."""
+    assert option_detail(decision())["priced_at"] == "ask"
+
+
+def test_the_selection_reason_and_alternatives_considered_are_surfaced():
+    o = option_detail(decision())
+    assert "nearest-the-money" in o["selection_reason"]
+    assert o["considered"] == 3
+
+
+def test_budget_utilisation_is_derived_from_the_real_budget():
+    o = option_detail(decision())
+    assert o["budget_used_pct"] == pytest.approx(96.0)
+
+
+def test_a_decision_with_no_contract_yields_no_option_detail():
+    assert option_detail(decision(options_trace=None)) == {}
+
+
+@pytest.mark.parametrize("bad", [
+    {"contract": {"symbol": "X", "bid": "n/a", "ask": None}},
+    {"contract": {"symbol": "X"}},
+    {"contract": "not a mapping"},
+])
+def test_unreadable_option_fields_degrade_rather_than_raise(bad):
+    o = option_detail(decision(options_trace=bad))
+    assert isinstance(o, dict)
+
+
+def test_an_unparseable_expiry_yields_no_dte_rather_than_a_wrong_one():
+    d = decision()
+    d["options_trace"]["contract"]["expiration"] = "not-a-date"
+    assert option_detail(d)["dte"] is None

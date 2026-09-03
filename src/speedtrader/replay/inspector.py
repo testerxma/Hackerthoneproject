@@ -388,3 +388,112 @@ def evidence_for(record: Mapping[str, Any]) -> list[dict[str, Any]]:
             "verifiable": True,
         })
     return out
+
+
+def option_detail(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Everything a reader needs to judge WHY this contract was chosen.
+
+    Derived rather than stored: DTE, mid, spread and spread-percentage are
+    computable from what was persisted, so recomputing them here keeps one
+    source of truth instead of a second set of numbers that can drift.
+
+    MAX PROFIT IS DELIBERATELY NOT A NUMBER. For a long call it is unbounded,
+    and printing a large figure next to an exactly-known max loss is how a
+    reader is led to a false expectation. It is returned as a statement, not a
+    quantity.
+    """
+    options = _mapping(_get(record, "options_trace"))
+    contract = _mapping(options.get("contract"))
+    sizing = _mapping(options.get("sizing"))
+    selection = _mapping(options.get("selection"))
+    fees = _mapping(options.get("estimated_fees"))
+    if not contract:
+        return {}
+
+    bid = _number(contract.get("bid"))
+    ask = _number(contract.get("ask"))
+    mid = (bid + ask) / 2.0 if bid is not None and ask is not None else None
+    spread = (ask - bid) if bid is not None and ask is not None else None
+    spread_pct = (spread / mid * 100.0) if spread is not None and mid else None
+
+    dte = _days_to_expiry(contract.get("expiration"),
+                          _get(record, "snapshot", "timestamp"))
+
+    contracts = _number(sizing.get("contracts")) or 0
+    max_loss = _number(sizing.get("max_loss_total"))
+    fee_total = _number(fees.get("total"))
+    # The honest headline: what this position can actually lose, all in.
+    max_loss_all_in = (max_loss + fee_total
+                       if max_loss is not None and fee_total is not None
+                       else max_loss)
+
+    return {
+        "symbol": contract.get("symbol"),
+        "underlying": _get(record, "snapshot", "symbol"),
+        "type": contract.get("type"),
+        "direction": _get(record, "candidate", "direction"),
+        "strike": contract.get("strike"),
+        "expiration": contract.get("expiration"),
+        "dte": dte,
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "spread": spread,
+        "spread_pct": spread_pct,
+        "multiplier": contract.get("multiplier"),
+        "open_interest": contract.get("open_interest"),
+        "premium_per_contract": sizing.get("premium_per_contract"),
+        "contracts": int(contracts),
+        "max_loss_per_contract": sizing.get("max_loss_per_contract"),
+        "max_loss_total": max_loss,
+        "estimated_fees": fee_total,
+        "max_loss_all_in": max_loss_all_in,
+        "risk_budget": sizing.get("risk_budget"),
+        "budget_used_pct": (max_loss / _number(sizing.get("risk_budget")) * 100.0
+                            if max_loss is not None
+                            and _number(sizing.get("risk_budget")) else None),
+        "caps_applied": list(sizing.get("caps_applied") or []),
+        "sizing_reason": sizing.get("reason"),
+        "selection_reason": selection.get("reason"),
+        "considered": selection.get("considered"),
+        # Priced at the ASK, never the mid: the mid is not a price anyone will
+        # sell to you at, and sizing against it understates what the position
+        # actually costs — which would make the max-loss figure untrue.
+        "priced_at": "ask",
+        "max_profit": ("unbounded for a long call — deliberately not quantified, "
+                       "because a large number beside an exact max loss invites "
+                       "a false expectation")
+        if str(contract.get("type", "")).lower() == "call"
+        else ("bounded by the strike falling to zero"
+              if str(contract.get("type", "")).lower() == "put" else "unknown"),
+    }
+
+
+def _number(value: Any) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def _days_to_expiry(expiration: Any, asof: Any) -> int | None:
+    """Calendar days from the snapshot to expiry. None if either is unreadable."""
+    from datetime import date, datetime
+
+    def as_date(v: Any) -> date | None:
+        if isinstance(v, date) and not isinstance(v, datetime):
+            return v
+        if isinstance(v, datetime):
+            return v.date()
+        if isinstance(v, str) and len(v) >= 10:
+            try:
+                return date.fromisoformat(v[:10])
+            except ValueError:
+                return None
+        return None
+
+    exp, now = as_date(expiration), as_date(asof)
+    if exp is None or now is None:
+        return None
+    return (exp - now).days

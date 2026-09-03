@@ -192,25 +192,48 @@ object.
   appears in any tracked file (checked by the CI `safety-invariants` job and
   independently by a full-repository grep before every push).
 
+- Removed ten empty scaffolding packages (`agents/{analysts,research,risk,
+  trading}`, `bridge`, `evidence`, `llm/models`, `memory`, `monitoring`,
+  `portfolio`) — every one 0 bytes and verified unreferenced before removal.
+- Gitignored generated runtime artefacts (`data/execution_intents.jsonl`,
+  `data/STOP`) and every `.env` variant, not just `.env` itself.
+- Rewrote a test fixture that was shaped exactly like a real API key: it tripped
+  the repository's own secret scanner, and a scanner people learn to ignore is
+  worse than no scanner.
+
 ## 10. Still open — owner action required
 
 These cannot be completed from inside this repository:
 
-- **A dedicated paper trading account for final submission.** lablab.ai's
-  rules for this hackathon state final submissions require a *new, dedicated*
-  Alpaca paper account. The account wired into `.env` during development
-  (`PA39QVA871BG`) was the one supplied for integration testing — confirm
-  whether it satisfies "dedicated for this submission," or create a fresh one
-  and re-point `.env` before submitting.
-- **Rotate the Alpaca API key/secret** pasted into chat during this session.
-  They were never committed (verified above), but they passed through a chat
-  transcript and should be treated as exposed.
-- **Pitch video** (≤5 minutes, MP4) and **slide deck** (PDF) — required by
-  lablab.ai's submission form; neither can be produced by this agent.
-- **Team name and contact email** — placeholder left in the README; fill in
-  before submitting.
-- **Deploy or link a "working prototype accessible by URL"** if the submission
-  form requires one distinct from the GitHub repo — e.g. hosting
-  `data/dashboard.html` (a static file, so this is a straightforward static
-  hosting task) or providing the repo URL itself, depending on how lablab's
-  form is worded this cycle.
+- **Pitch video** (≤5 min, MP4) and **slide presentation** — both required by
+  the lablab.ai submission form. Neither can be produced by this agent.
+- **Cover image** for the submission listing.
+- **Team name and contact email** — a placeholder is left in the README.
+- **Alpaca paper account ID** must be entered on the submission form. The
+  dedicated account is `PA3FJIP2GIRB` (created for this submission, $100,000
+  starting balance, options level 3, zero pre-existing orders — verified).
+- **Rotate the API keys** that were shared during development once the
+  hackathon is over. They are in `.env`, which is gitignored and appears in no
+  tracked file or commit — but they passed through a chat transcript.
+- **Up to 5 social posts** on X / LinkedIn tagging @lablabai and @AlpacaHQ, for
+  the separate social-engagement prize.
+- **Demo application URL**, if the form requires one distinct from the repo.
+  `data/dashboard.html` is a single self-contained file, so any static host
+  serves it as-is.
+
+## 11. On the P&L judging criterion, stated plainly
+
+P&L is the first judging criterion, and this account's P&L is currently
+**$0.00** with zero fills. That is reported, not hidden, on the dashboard and
+here.
+
+The honest position: this system is built to decline trades it cannot justify,
+and it spent the development window outside market hours, where it correctly
+refuses to price options against stale quotes. Two earlier orders on the
+development account were submitted pre-market and never became marketable —
+root-caused above, and the market-hours gate now prevents exactly that.
+
+No P&L figure is fabricated, annualised, back-filled or simulated anywhere in
+this repository to improve that number. A zero is a factual state, and
+manufacturing activity to disguise it would invalidate every other claim the
+audit trail makes.

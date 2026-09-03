@@ -283,6 +283,30 @@ MUTANTS: list[Mutant] = [
            ("unit/quant",)),
 
     # ==================================================================
+    # Options presentation: the max-loss figure must stay true
+    # ==================================================================
+    Mutant("option-maxloss-excludes-fees", "replay/inspector.py",
+           "    max_loss_all_in = (max_loss + fee_total",
+           "    max_loss_all_in = (max_loss + 0 * fee_total",
+           "the headline max loss understates what the position can actually lose",
+           ("unit/replay",)),
+    Mutant("option-priced-at-mid", "replay/inspector.py",
+           '        "priced_at": "ask",',
+           '        "priced_at": "mid",',
+           "the page claims sizing used the mid, which would make max loss untrue",
+           ("unit/replay",)),
+    Mutant("option-quantifies-max-profit", "replay/inspector.py",
+           '        "max_profit": ("unbounded for a long call — deliberately not quantified, "',
+           '        "max_profit": ("999999 "',
+           "a large profit figure is printed beside an exactly known max loss",
+           ("unit/replay",)),
+    Mutant("option-dte-from-today", "replay/inspector.py",
+           '    dte = _days_to_expiry(contract.get("expiration"),\n                          _get(record, "snapshot", "timestamp"))',
+           '    dte = _days_to_expiry(contract.get("expiration"), None)',
+           "DTE is measured from now, not from the snapshot the decision faced",
+           ("unit/replay",)),
+
+    # ==================================================================
     # The decision inspector: authority separation is the whole argument
     # ==================================================================
     Mutant("inspector-ai-is-deterministic", "replay/inspector.py",

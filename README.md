@@ -8,7 +8,7 @@ real generated command centre is <code>data/dashboard.html</code>.</i></sub>
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 953 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 1020 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -114,8 +114,8 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 953 passed
-python scripts/mutation_test.py              # 49 mutants; every guard is load-bearing
+python -m pytest -q                          # 1020 passed
+python scripts/mutation_test.py              # 64 mutants; every guard is load-bearing
 ```
 
 | Scenario | Demonstrates |
@@ -205,21 +205,33 @@ useless; an auditor needs to know which field moved.
 ## Command centre
 
 ```bash
-python scripts/build_dashboard.py && open data/dashboard.html
+python scripts/build_dashboard.py --live      # real paper account + journal
+open data/dashboard.html
 ```
 
-Self-contained HTML generated from the real decision store — no server, no CDN,
-no network (asserted by test). The hero is not P&L; it is the **separation of
-authority**, three lanes per decision:
+A single self-contained HTML file — no server, no build step, no network. It
+renders the real pipeline: every figure comes from a persisted decision record,
+from the Alpaca paper account, or from the runtime's own health object.
 
-| Lane | Role | Shows |
-|---|---|---|
-| **AI** | advisory | CONFIRM / ABSTAIN / VETO, and `changed outcome: YES/NO` |
-| **DETERMINISTIC** | authority | verdict, checks passed, the rule that blocked |
-| **EXECUTION** | outcome | contract, contracts, max loss vs budget |
+It shows market state, the quantitative signal, the AI advisory lane, the
+deterministic authority lane, the execution outcome lane, options contract and
+sizing with **max loss labelled EXACT**, every deterministic check with its
+observed value, rejected option candidates with the reason each was dropped,
+the order lifecycle with intent phase beside broker state, and
+**"why we did NOT trade"** attributing each declined decision to the layer that
+stopped it.
 
-It also answers **"why we did NOT trade"**, attributing every declined decision
-to the layer that stopped it. Most systems only show the trades they took.
+**There is no JavaScript on the page, and that is a security property rather
+than a stylistic one.** The page renders text authored by a language model and
+by a broker; with no `<script>` element there is no execution path for a hostile
+string — not a mitigated one, an absent one. Interactivity is CSS `:checked` and
+`<details>`. A test asserts the page contains no `<script`, no external URL and
+no event-handler attribute, and CI regenerates the page and scans it for
+credential-shaped literals.
+
+Provenance is badged on every figure — `PAPER`, `SIMULATED`, `ESTIMATED`,
+`EXACT` — and a broker that cannot be reached omits the account panel rather
+than showing stale or estimated numbers. A zero is rendered as a zero.
 
 ---
 
@@ -283,11 +295,11 @@ Critical logic is **mutation-tested, reproducibly**: each guard is deliberately
 broken and the suite must go red.
 
 ```bash
-python scripts/mutation_test.py          # 49 mutants; runs in CI
+python scripts/mutation_test.py          # 64 mutants; runs in CI
 python scripts/mutation_test.py --list   # see exactly what gets broken
 ```
 
-**47 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
+**62 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
 a precise, reviewable edit to real source — the exact string removed and the
 exact string put in its place — so a reviewer can judge whether breaking it
 should matter, rather than trusting a number.
@@ -423,6 +435,80 @@ meaningful in-process sandbox — validation enforces the contract, not safety f
 hostile code. Read a third-party strategy as you would any dependency. What *is*
 guaranteed is narrower and true: no strategy can execute a trade, enlarge a
 position, weaken a limit, or bypass the licence. Those paths do not exist.
+
+---
+
+## Autonomous runtime
+
+The loop decides and executes without a human in the cycle. It does **not** get
+to decide how often it runs, how many orders it may place, or whether to keep
+going after something breaks — those are bounds set before it starts, and it
+cannot raise them. An agent that can widen its own limits has no limits.
+
+```bash
+python scripts/run_autonomous.py --dry-run --max-cycles 1     # decide, send nothing
+python scripts/run_autonomous.py --live --max-cycles 20 \
+    --max-orders 5 --interval 300 --until 2026-09-04T15:00:00Z
+touch data/STOP                                                # kill switch
+```
+
+| Bound | Exists because |
+|---|---|
+| `--max-cycles` / `--until` | a run that never ends is a run nobody is watching |
+| `--interval` (min 1s) | a tight loop is a rate-limit ban and a bill |
+| `--max-orders` | one bad signal repeated is not one bad trade |
+| `max_consecutive_errors` | a broken dependency should stop the loop, not be retried forever at speed |
+| kill switch (a **file**) | stopping it must not require finding the process |
+| market-hours gate | an option order queued overnight prices against a quote that is stale by the open |
+
+`SIGINT`/`SIGTERM` and the kill switch both stop it **after the current cycle**,
+never mid-order: the window between submitting and recording is exactly what the
+write-ahead log exists to protect, so there is no reason to open it deliberately.
+One symbol raising is isolated, recorded, and counted toward the error bound —
+never silently swallowed.
+
+---
+
+## Execution lifecycle and restart safety
+
+The expensive bug in an execution system is not a wrong order, it is a
+**duplicate** one. Without a write-ahead record the order of events is
+
+```
+mint licence  ->  submit to broker  ->  write the decision
+```
+
+and a crash between the second and third step leaves a live order that nothing
+on disk records. On restart the system would evaluate the same signal and submit
+again.
+
+So the intent is written and **fsynced before the broker is contacted**:
+
+```
+data/execution_intents.jsonl     append-only, fsynced, keyed by client_order_id
+```
+
+| Phase | Meaning |
+|---|---|
+| `attempted` | written **pre-submission**; an order may exist |
+| `submitted` | broker acknowledged, order id known — still not filled |
+| `unknown` | ambiguous; an order **may** exist |
+| `rejected` | broker positively refused; no order exists |
+| `reconciled` | broker state observed after the fact |
+| `abandoned` | established that no order was ever created |
+
+On startup, `recover()` settles every unresolved intent against the broker and
+**refuses to trade while any remains unresolved**. An outage is not evidence
+that an order is absent, so it blocks rather than assumes. Recovery is handed a
+read-only `OrderLookup` and nothing else — there is no code path from it to an
+order. A `client_order_id` already in the journal is never sent again, a guard
+that survives a restart in a way in-memory nonce burning cannot.
+
+**Why the two existing orders never filled** — root-caused rather than papered
+over. They were submitted outside regular trading hours against quotes that were
+stale by the open, so a limit priced at the then-ask was no longer marketable.
+The fix is the market-hours gate above, not a wider limit: loosening the price
+bound would have broken the exact-max-loss guarantee the sizing model depends on.
 
 ---
 

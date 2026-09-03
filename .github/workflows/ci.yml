@@ -116,6 +116,45 @@ jobs:
           print("risk config is fail-closed with the kill switch enabled")
           PY
 
+      - name: The autonomous runtime must start and stop cleanly
+        # A bounded loop that cannot be stopped is the failure mode that
+        # matters most for an unattended trader, so the kill switch and the
+        # cycle bound are exercised for real, not just unit-tested.
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "src")
+          from speedtrader.app.runtime import (
+              AutonomousRuntime, RuntimeLimits, RuntimeState, StopReason)
+
+          rt = AutonomousRuntime(
+              symbols=["SPY"], cycle_fn=lambda s, c: None,
+              limits=RuntimeLimits(interval_seconds=1, max_cycles=2,
+                                   require_market_open=False),
+              sleep_fn=lambda s: None)
+          health = rt.run()
+          assert health.state is RuntimeState.STOPPED, health.state
+          assert health.cycles_completed == 2, health.cycles_completed
+          assert health.stop_reason is StopReason.MAX_CYCLES
+          print("runtime start/stop OK:", health.to_record())
+          PY
+
+      - name: No credentials in any generated artefact
+        # The dashboard reads the paper account. It must render an account
+        # NUMBER and never a key, and must contain no script element at all.
+        run: |
+          python scripts/build_dashboard.py --out /tmp/dash.html
+          python - <<'PY'
+          import re, sys, pathlib
+          page = pathlib.Path("/tmp/dash.html").read_text()
+          if re.search(r"\b(?:AK|PK|SK)[A-Z0-9]{18,}\b", page):
+              sys.exit("credential-shaped literal in the generated dashboard")
+          for bad in ("<script", "http://", "https://", "onerror=", "javascript:"):
+              if bad in page:
+                  sys.exit(f"generated dashboard contains {bad!r}")
+          print("dashboard is credential-free, script-free and self-contained")
+          PY
+
       - name: No committed secrets
         run: |
           python - <<'PY'

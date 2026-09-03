@@ -124,7 +124,7 @@ class OptionsExecutionAdapter:
     """Submits one authorized option order. Holds no strategy or risk logic."""
 
     def __init__(self, broker: BrokerPort, registry: AuthorizationRegistry,
-                 *, paper: bool = True):
+                 *, paper: bool = True, journal: Any = None):
         if not paper:
             # Structural, not advisory. This project has never validated a
             # strategy on live options and must not be one flag from doing so.
@@ -134,6 +134,31 @@ class OptionsExecutionAdapter:
             )
         self.broker = broker
         self.registry = registry
+        #: Optional IntentJournal. When present, an execution attempt is made
+        #: durable on disk BEFORE the broker is contacted, so a crash mid-flight
+        #: still leaves evidence that an order may exist. Optional so the
+        #: adapter stays unit-testable without a filesystem, but the autonomous
+        #: runtime always supplies one.
+        self.journal = journal
+
+    def _journal_outcome(self, client_order_id: str, phase: str, *,
+                         broker_order_id: str | None = None,
+                         detail: str = "", now: datetime | None = None) -> None:
+        """Record what was established. Never allowed to mask the real result.
+
+        A journal write failing after the broker already answered must not
+        turn a known outcome into an exception — the order state is the more
+        important fact, and the pending entry that remains is the safe reading.
+        """
+        if self.journal is None:
+            return
+        try:
+            from .intent_journal import IntentPhase
+            self.journal.record_outcome(
+                client_order_id=client_order_id, phase=IntentPhase(phase),
+                broker_order_id=broker_order_id, detail=detail, now=now)
+        except Exception:
+            pass
 
     def submit(
         self,
@@ -142,6 +167,7 @@ class OptionsExecutionAdapter:
         *,
         portfolio_snapshot: Mapping[str, Any],
         now: datetime | None = None,
+        cycle_id: str = "",
     ) -> ExecutionResult:
         """Verify the licence against THIS request, then submit exactly once."""
         client_order_id = ""
@@ -183,15 +209,54 @@ class OptionsExecutionAdapter:
         client_order_id = f"st-{authorization.nonce}"
         payload = {**request.to_proposal(), "client_order_id": client_order_id}
 
+        # A licence already in the journal was already used to contact the
+        # broker. Whatever this process believes, an order may exist under this
+        # id, so sending it again is a duplicate submission and is refused.
+        # This guard survives a restart; in-memory nonce burning does not.
+        if self.journal is not None and self.journal.has_attempt(client_order_id):
+            return ExecutionResult(
+                state=SubmissionState.BLOCKED, request=request,
+                client_order_id=client_order_id,
+                reason=("this authorization was already submitted to the broker "
+                        "(found in the execution intent journal); reconcile it "
+                        "rather than sending it again"),
+            )
+
+        # WRITE-AHEAD. Durable on disk BEFORE the broker is contacted, so a
+        # crash between here and the response still leaves evidence that an
+        # order may exist under this client_order_id. If this write fails we
+        # must NOT trade: an unrecorded attempt is unrecoverable.
+        if self.journal is not None:
+            try:
+                self.journal.record_attempt(
+                    client_order_id=client_order_id,
+                    decision_id=authorization.decision_id,
+                    cycle_id=cycle_id,
+                    symbol=request.symbol,
+                    quantity=request.quantity,
+                    limit_price=request.limit_price,
+                    now=now,
+                )
+            except Exception as e:
+                return ExecutionResult(
+                    state=SubmissionState.BLOCKED, request=request,
+                    client_order_id=client_order_id,
+                    reason=(f"could not record execution intent before "
+                            f"submission ({type(e).__name__}: {e}); refusing to "
+                            f"send an order that could not be recovered"),
+                )
+
         try:
             raw = self.broker.submit_option_order(payload)
         except BrokerRejected as e:
+            self._journal_outcome(client_order_id, "rejected", detail=str(e), now=now)
             return ExecutionResult(
                 state=SubmissionState.REJECTED, request=request,
                 client_order_id=client_order_id, reason=str(e),
             )
         except BrokerTimeout as e:
             # The order MAY exist. Not a failure, not a success.
+            self._journal_outcome(client_order_id, "unknown", detail=str(e), now=now)
             return ExecutionResult(
                 state=SubmissionState.UNKNOWN, request=request,
                 client_order_id=client_order_id,
@@ -200,6 +265,8 @@ class OptionsExecutionAdapter:
         except Exception as e:
             # Any unexpected error is also ambiguous: the request may have been
             # transmitted. Fail to UNKNOWN, never to a clean failure.
+            self._journal_outcome(client_order_id, "unknown",
+                                  detail=f"{type(e).__name__}: {e}", now=now)
             return ExecutionResult(
                 state=SubmissionState.UNKNOWN, request=request,
                 client_order_id=client_order_id,
@@ -208,6 +275,8 @@ class OptionsExecutionAdapter:
             )
 
         if not isinstance(raw, Mapping):
+            self._journal_outcome(client_order_id, "unknown",
+                                  detail="unreadable broker response", now=now)
             return ExecutionResult(
                 state=SubmissionState.UNKNOWN, request=request,
                 client_order_id=client_order_id,
@@ -216,6 +285,8 @@ class OptionsExecutionAdapter:
         broker_id = raw.get("id") or raw.get("order_id")
         if not broker_id:
             # A response we cannot interpret is not a confirmation.
+            self._journal_outcome(client_order_id, "unknown",
+                                  detail="no order id in broker response", now=now)
             return ExecutionResult(
                 state=SubmissionState.UNKNOWN, request=request,
                 client_order_id=client_order_id,
@@ -223,6 +294,9 @@ class OptionsExecutionAdapter:
                 raw=dict(raw),
             )
 
+        self._journal_outcome(client_order_id, "submitted",
+                              broker_order_id=str(broker_id),
+                              detail="broker acknowledged", now=now)
         return ExecutionResult(
             state=SubmissionState.SUBMITTED,
             request=request,

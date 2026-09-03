@@ -196,9 +196,9 @@ def parse_tool_result(result: Any) -> Mapping[str, Any]:
 
     payload = getattr(result, "structuredContent", None)
     if isinstance(payload, Mapping):
-        inner = payload.get("result", payload)
-        if isinstance(inner, Mapping):
-            return inner
+        unwrapped = _unwrap(payload)
+        if isinstance(unwrapped, Mapping):
+            return unwrapped
 
     text = _text_of(result)
     if text:
@@ -212,6 +212,36 @@ def parse_tool_result(result: Any) -> Mapping[str, Any]:
         if isinstance(parsed, Mapping):
             return parsed
     return {}
+
+
+#: Envelope keys the MCP server nests its payload under. Verified against the
+#: live server (alpaca-mcp-server 2.3.1), which returns
+#: {"_alpaca_mcp_security": ..., "data": {"result": <the order>}}.
+#: Unwrapping only "result" — as the first version did — returned the outer
+#: envelope, which carries no order id, so a SUCCESSFUL submission was reported
+#: as UNKNOWN. The order really was placed; the adapter simply could not see it.
+_ENVELOPE_KEYS = ("data", "result", "order", "orders")
+
+
+def _unwrap(payload: Mapping[str, Any], depth: int = 0) -> Any:
+    """Descend through envelope wrappers to the object that carries an id.
+
+    Bounded: a malformed or self-referential payload must not spin. Stops as
+    soon as a mapping looks like an order (it has an id) so a legitimate
+    "data"/"result" FIELD on the order itself is never mistaken for an envelope.
+    """
+    if depth > 5 or not isinstance(payload, Mapping):
+        return payload
+    if payload.get("id") or payload.get("order_id"):
+        return payload
+    for key in _ENVELOPE_KEYS:
+        inner = payload.get(key)
+        if isinstance(inner, Mapping):
+            return _unwrap(inner, depth + 1)
+        if isinstance(inner, list) and inner and isinstance(inner[0], Mapping):
+            # A single-order submission that came back as a one-element list.
+            return _unwrap(inner[0], depth + 1)
+    return payload
 
 
 def _text_of(result: Any) -> str:

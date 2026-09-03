@@ -11,3 +11,8 @@ logs/
 *.db
 .DS_Store
 data/dashboard.html
+
+# editable-install build artefacts
+*.egg-info/
+build/
+dist/

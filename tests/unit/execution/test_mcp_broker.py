@@ -180,3 +180,53 @@ def test_credentials_never_appear_in_repr():
 def test_it_satisfies_the_broker_port_used_by_the_adapter():
     """Structural: the adapter depends on this one method existing."""
     assert callable(AlpacaMCPBroker.submit_option_order)
+
+
+# ============================================ the real envelope shape
+# Verified against alpaca-mcp-server 2.3.1 running live. It returns
+#   {"_alpaca_mcp_security": ..., "data": {"result": <the order>}}
+# The first parser unwrapped only "result", so it handed back the OUTER envelope,
+# which carries no order id — and a genuinely SUCCESSFUL submission was reported
+# as UNKNOWN. The order really was placed; the adapter could not see it.
+
+def test_the_live_two_level_envelope_is_unwrapped():
+    r = Result(structured={"_alpaca_mcp_security": {"scrubbed": True},
+                           "data": {"result": {"id": "ord_live",
+                                               "status": "accepted"}}})
+    assert parse_tool_result(r)["id"] == "ord_live"
+
+
+def test_a_single_level_data_envelope_is_unwrapped():
+    assert parse_tool_result(
+        Result(structured={"data": {"id": "ord_x"}}))["id"] == "ord_x"
+
+
+def test_an_order_returned_as_a_one_element_list_is_unwrapped():
+    r = Result(structured={"data": {"result": [{"id": "ord_list"}]}})
+    assert parse_tool_result(r)["id"] == "ord_list"
+
+
+def test_a_bare_order_object_is_returned_unchanged():
+    assert parse_tool_result(
+        Result(structured={"id": "ord_bare"}))["id"] == "ord_bare"
+
+
+def test_unwrapping_stops_at_the_object_that_has_an_id():
+    """An order with its own 'data' FIELD must not be mistaken for an envelope."""
+    r = Result(structured={"data": {"result": {
+        "id": "ord_real", "data": {"id": "should_not_be_reached"}}}})
+    assert parse_tool_result(r)["id"] == "ord_real"
+
+
+def test_a_deeply_nested_payload_cannot_spin():
+    """Bounded descent: a malformed or self-referential payload must terminate."""
+    deep = {"id": "bottom"}
+    for _ in range(40):
+        deep = {"data": deep}
+    parse_tool_result(Result(structured=deep))     # must return, not hang
+
+
+def test_an_envelope_with_no_order_id_still_yields_no_id():
+    """The UNKNOWN path must remain reachable — never invent an id."""
+    out = parse_tool_result(Result(structured={"data": {"result": {"status": "ok"}}}))
+    assert "id" not in out and "order_id" not in out

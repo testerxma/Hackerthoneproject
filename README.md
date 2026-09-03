@@ -25,11 +25,11 @@ every claim in this README.
 
 | | |
 |---|---|
+| **Team** | testerxma |
 | **One-page write-up** | [`docs/ONE_PAGER.md`](docs/ONE_PAGER.md) — AI logic, risk gates, Alpaca infrastructure |
 | **Engineering log** | [`docs/SUBMISSION.md`](docs/SUBMISSION.md) — what was built, what was rejected, and why |
 | **Paper account** | `PA3FJIP2GIRB` · dedicated to this hackathon · $100,000 starting balance |
 | **License** | [MIT](LICENSE) |
-| **Team** | ⚠️ **Owner to complete before submitting** — team name and contact email |
 
 ---
 

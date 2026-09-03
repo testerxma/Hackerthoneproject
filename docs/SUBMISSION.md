@@ -211,7 +211,8 @@ These cannot be completed from inside this repository:
 - **Pitch video** (≤5 min, MP4) and **slide presentation** — both required by
   the lablab.ai submission form. Neither can be produced by this agent.
 - **Cover image** for the submission listing.
-- **Team name and contact email** — a placeholder is left in the README.
+- **Contact email**, if the submission form requires one. The team name is
+  filled in (`testerxma`); no email address is recorded in this repository.
 - **Alpaca paper account ID** must be entered on the submission form. The
   dedicated account is `PA3FJIP2GIRB` (created for this submission, $100,000
   starting balance, options level 3, zero pre-existing orders — verified).

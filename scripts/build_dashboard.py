@@ -250,7 +250,7 @@ def build(decisions: list[dict], *, simulated: bool) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SpeedTrader AI — Command Centre</title>
+<title>SpeedTrader Command Centre</title>
 <style>
   :root {{ color-scheme: dark;
     --surface: {SURFACE}; --panel:#181b23; --line:#262b36;
@@ -260,6 +260,10 @@ def build(decisions: list[dict], *, simulated: bool) -> str:
   * {{ box-sizing:border-box; }}
   body {{ margin:0; background:var(--surface); color:var(--ink);
     font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; }}
+  /* Data wears a mono face so digits align down a column. System stack only:
+     a webfont would break the offline guarantee this page is built on. */
+  .v, .val, .fp, .stage span, .meta {{ font-family:ui-monospace,SFMono-Regular,
+    Menlo,Consolas,monospace; font-variant-numeric:tabular-nums; }}
   .wrap {{ max-width:1180px; margin:0 auto; padding:20px; }}
   .banner {{ background:#3a2a12; border:1px solid var(--warn);
     color:#ffd98a; padding:9px 14px; border-radius:8px; font-weight:600;
@@ -282,9 +286,8 @@ def build(decisions: list[dict], *, simulated: bool) -> str:
     border-radius:10px; padding:14px 16px; margin-bottom:14px; }}
   .card header {{ display:flex; gap:12px; align-items:center;
     color:var(--ink2); font-size:12px; margin-bottom:12px; }}
-  .fp {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-    color:var(--violet); background:#1e1b2e; padding:2px 8px;
-    border-radius:5px; }}
+  .fp {{ color:var(--violet); background:#1e1b2e; padding:2px 8px;
+    border-radius:5px; letter-spacing:.02em; }}
   .sym {{ font-weight:700; color:var(--ink); font-size:14px; }}
   .when {{ margin-left:auto; }}
   .pipe {{ display:flex; align-items:stretch; gap:2px; flex-wrap:wrap;
@@ -327,7 +330,7 @@ def build(decisions: list[dict], *, simulated: bool) -> str:
 
 <div class="banner">⚠ {esc(banner)}</div>
 
-<h1>SpeedTrader AI — Command Centre</h1>
+<h1>SpeedTrader Command Centre</h1>
 <p class="sub">The AI can challenge a trade. Only deterministic systems authorise one.</p>
 
 <div class="grid">

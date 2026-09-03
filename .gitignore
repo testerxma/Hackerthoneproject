@@ -10,3 +10,4 @@ data/snapshots/*
 logs/
 *.db
 .DS_Store
+data/dashboard.html

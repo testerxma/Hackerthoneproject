@@ -25,7 +25,7 @@ every claim in this README.
 
 | | |
 |---|---|
-| **Team** | _TODO — owner to fill in team name and contact email before submitting_ |
+| **Team** | _testerxma_ |
 | **License** | [MIT](LICENSE) |
 | **Live verification** | Real paper orders placed via Alpaca's official MCP server (see [Live Alpaca](#live-alpaca)) |
 

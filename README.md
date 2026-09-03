@@ -343,7 +343,7 @@ against a live terminal. That is documented rather than claimed.
 
 ```bash
 cp .env.example .env        # add ALPACA_API_KEY / ALPACA_SECRET_KEY
-pip install alpaca-mcp-server mcp anthropic
+pip install -e ".[live]"      # MCP broker transport
 ```
 
 Orders reach Alpaca through its **official MCP server** (`place_option_order`).

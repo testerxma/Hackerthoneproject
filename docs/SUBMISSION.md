@@ -31,7 +31,7 @@ credentials:
 
 ```bash
 cp .env.example .env      # fill in ALPACA_API_KEY / ALPACA_SECRET_KEY
-pip install alpaca-mcp-server mcp anthropic
+pip install -e ".[live]"      # MCP broker transport
 ```
 
 ## 3. How to run everything

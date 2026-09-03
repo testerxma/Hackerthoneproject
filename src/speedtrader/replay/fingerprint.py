@@ -35,6 +35,22 @@ WHAT IS DELIBERATELY EXCLUDED, AND WHY
     broker order ids                        assigned by Alpaca, not decided here
 
 --------------------------------------------------------------------------------
+A KNOWN LIMIT, STATED RATHER THAN HIDDEN
+--------------------------------------------------------------------------------
+The option chain is NOT part of the stored snapshot, so two decisions that differ
+only in the chain they were offered can share a fingerprint. In practice this
+happens when both were rejected before a contract was selected — an illiquid book
+and an unaffordable premium both stop at "no contract sized", and from the
+deterministic payload's point of view those are the same decision reached from
+the same market state.
+
+That is correct for what the fingerprint claims to identify (the deterministic
+decision) and wrong for what someone might assume it identifies (the whole
+scenario). Persisting the chain would fix it and would also bloat every record
+with hundreds of contracts; the trade was made deliberately and is recorded here
+rather than left for someone to discover.
+
+--------------------------------------------------------------------------------
 THE ONE THING THE AI CAN CHANGE, TRACKED SEPARATELY
 --------------------------------------------------------------------------------
 A VETO does change the outcome — that is the AI's single power. So the veto is

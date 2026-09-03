@@ -231,3 +231,22 @@ def test_bars_are_digested_not_embedded():
 def test_an_empty_decision_still_fingerprints_without_raising():
     """A rejected no-signal decision has no candidate; it is still identifiable."""
     assert len(decision_fingerprint({"state": "REJECTED"})) == LENGTH
+
+
+def test_decisions_differing_only_by_an_unrecorded_option_chain_collide():
+    """A documented limitation, pinned so it cannot change silently.
+
+    The option chain is not part of the stored snapshot, so two decisions
+    rejected before a contract was selected are identical in the deterministic
+    payload. Correct for what the fingerprint identifies; surprising if someone
+    assumes it identifies the whole scenario.
+    """
+    a = copy.deepcopy(BASE)
+    b = copy.deepcopy(BASE)
+    for d in (a, b):
+        d["state"] = "REJECTED"
+        d["rejection_stage"] = "REJECTED_BY_RISK_ENGINE"
+        d["options_trace"] = None
+    a["rejection_reason"] = "no tradeable contract: spread too wide"
+    b["rejection_reason"] = "options sizing rejected: premium over budget"
+    assert decision_fingerprint(a) == decision_fingerprint(b)

@@ -16,6 +16,10 @@ offline provider and a synthetic breakout, and says so.
     --scenario broke      the premium exceeds the risk budget -> no trade
     --scenario timeout    the broker times out -> UNKNOWN, never assumed filled
     --scenario all        every one of the above, in sequence
+
+    --replay              re-derive every recorded decision from its snapshot
+                          and prove the deterministic result is reproducible
+    --dashboard           also write the command centre HTML
 """
 from __future__ import annotations
 
@@ -140,6 +144,43 @@ class VetoProvider:
             provider=self.name, model="scripted-demo-1")
 
 
+def replay_recorded(store_dir: Path) -> None:
+    """Re-derive every stored decision and report whether it reproduced.
+
+    The AI is not run during replay. That is the point: if the deterministic
+    result is identical with the model absent, the model did not influence it.
+    """
+    import json as _json
+
+    from speedtrader.replay.engine import replay_all
+
+    records = []
+    for path in sorted(store_dir.glob("decisions-*.jsonl")):
+        for line in path.read_text().splitlines():
+            if line.strip():
+                records.append(_json.loads(line))
+    if not records:
+        say("  nothing recorded yet")
+        return
+
+    exec_cfg = yaml.safe_load((ROOT / "configs" / "execution_config.yaml").read_text())
+    risk_cfg = yaml.safe_load((ROOT / "configs" / "risk_config.yaml").read_text())
+    results = replay_all(records, strategies=[S07MomentumBreakout()],
+                         execution_config=exec_cfg, risk_config=risk_cfg)
+
+    ok = sum(1 for r in results if r.reproducible)
+    for r in results:
+        mark = f"{C['g']}reproduced{C['0']}" if r.reproducible else f"{C['r']}DIVERGED{C['0']}"
+        veto = " (AI vetoed — the one thing it can change)" if r.ai_changed_the_outcome else ""
+        say(f"  {r.original_fingerprint}  {mark}{C['d']}{veto}{C['0']}")
+    say()
+    say(f"  {ok}/{len(results)} decisions re-derived from their stored snapshot alone,")
+    say(f"  {C['d']}with the AI never consulted. The fingerprint excludes the AI "
+        f"review by{C['0']}")
+    say(f"  {C['d']}construction, so a model that confirms and a model that "
+        f"abstains hash identically.{C['0']}")
+
+
 # ---------------------------------------------------------------- the cycle
 def run_scenario(name: str, store_dir: Path) -> bool:
     breakout = name != "no-signal"
@@ -216,6 +257,10 @@ def main() -> int:
                     choices=["all", "breakout", "veto", "no-signal", "illiquid",
                              "broke", "timeout"])
     ap.add_argument("--store", default=str(ROOT / "data" / "decisions"))
+    ap.add_argument("--replay", action="store_true",
+                    help="replay every recorded decision and verify reproducibility")
+    ap.add_argument("--dashboard", action="store_true",
+                    help="also write data/dashboard.html from the decisions")
     args = ap.parse_args()
 
     store_dir = Path(args.store)
@@ -232,6 +277,18 @@ def main() -> int:
     for s in scenarios:
         rule(s.upper())
         run_scenario(s, store_dir)
+
+    if args.replay:
+        rule("REPLAY — IS THIS SYSTEM REPRODUCIBLE?")
+        replay_recorded(store_dir)
+
+    if args.dashboard:
+        rule("COMMAND CENTRE")
+        out = ROOT / "data" / "dashboard.html"
+        import subprocess
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "build_dashboard.py"),
+                        "--store", str(store_dir), "--out", str(out)], check=True)
+        say(f"  open {out} — no server required")
 
     rule("AUDIT TRAIL")
     say(f"  every decision above — accepted or not — is appended to "

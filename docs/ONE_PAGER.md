@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 769 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 876 tests
 
 ---
 
@@ -97,22 +97,44 @@ verification breaks 29 tests; allowing unsafe retries breaks 13.
 
 ---
 
-## Auditability
+## Auditability — the differentiator
 
 Every decision — accepted or not — is appended to JSONL carrying the snapshot, the
 signal, **the cost assumptions behind its EV**, all deterministic checks, the
 contract chosen *with the alternatives that were rejected and why*, the AI review
-with the model and prompt version, and the execution outcome. The MT5 source is
-cryptographically pinned in CI so an edit fails the build rather than silently
-invalidating the `L####` citations throughout the quant modules.
+with the model and prompt version, and the execution outcome.
+
+**Decisions are reproducible.** A 16-char fingerprint identifies what the
+deterministic system decided and *excludes the AI review by construction*, so the
+same market state hashes identically whether the model confirmed, abstained,
+timed out or never ran — the central claim reduced to comparing two strings, and
+asserted end-to-end by test. `--replay` re-derives every stored decision from its
+snapshot with the model absent; a divergence names the field that moved. A veto
+is tracked *beside* the fingerprint, never inside it, because it is the one thing
+the AI can change.
+
+A generated command centre renders each decision as three lanes — AI advisory,
+deterministic authority, execution outcome — plus **"why we did NOT trade"**,
+attributing every declined decision to the layer that stopped it.
+
+Walk-forward backtesting with cost sensitivity covers the underlying signal;
+options P&L is deliberately not simulated, because it would require a pricing
+model and would measure that model rather than the strategy.
+
+The MT5 source is cryptographically pinned in CI so an edit fails the build
+rather than silently invalidating the `L####` citations throughout the quant
+modules.
 
 ## Stated honestly
 
 Specification parity with MT5, **not** runtime-verified parity (ADX/DI
 normalisation is undocumented and untested against a live terminal). Only S07 of
-S01–S14 is ported. Vertical spreads, Greeks, and memory are not built. **No P&L
-claim is made** — paper trading is a simulation.
+S01–S14 is ported. Vertical spreads are declared and explicitly refused — a
+two-leg order can leg out, and spreads need a higher approval level than the demo
+can rely on. Greeks and memory are not built. The backtest measures the
+underlying signal, never options P&L. **No P&L claim is made anywhere** — paper
+trading is a simulation.
 
 ```bash
-pip install -e ".[dev]" && python scripts/run_options_demo.py    # no API key needed
+pip install -e ".[dev]" && python scripts/run_options_demo.py --replay --dashboard
 ```

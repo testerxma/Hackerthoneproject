@@ -2,14 +2,15 @@
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 769 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 876 tests
 
 ```bash
 pip install -e ".[dev]"
-python scripts/run_options_demo.py
+python scripts/run_options_demo.py --replay --dashboard
 ```
 
-No API key. No network. No configuration. That runs the complete decision cycle.
+No API key. No network. No configuration. That runs the complete decision cycle,
+re-derives every decision from its stored snapshot, and writes the command centre.
 
 ---
 
@@ -96,7 +97,7 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 769 passed
+python -m pytest -q                          # 876 passed
 ```
 
 | Scenario | Demonstrates |
@@ -117,6 +118,86 @@ cat data/decisions/decisions-*.jsonl | head -1 | python -m json.tool
 Every record carries the snapshot, the signal, **the cost assumptions behind its
 EV**, all 22 deterministic checks, the contract chosen *and what was rejected and
 why*, the AI review with the model that produced it, and the execution outcome.
+
+---
+
+## The part competitors cannot do: replay
+
+Every LLM trading agent shares one documented weakness, stated by its own
+authors — model output is not reproducible, so a decision cannot be audited
+afterwards. SpeedTrader's decisions *can* be re-derived, because the part that
+decides is deterministic.
+
+```
+$ python scripts/run_options_demo.py --replay
+
+  315c42afbae355ad  reproduced
+  3cc211821bdfd44a  reproduced (AI vetoed — the one thing it can change)
+  f85abf8442f2541e  reproduced
+
+  6/6 decisions re-derived from their stored snapshot alone, with the AI
+  never consulted.
+```
+
+The 16-character fingerprint identifies **what the deterministic system
+decided**, and it **excludes the AI review by construction**. So the same market
+state hashes identically whether the model confirmed, abstained, timed out,
+returned hostile output, or never ran. The project's central claim reduces to
+comparing two strings — and a `CONFIRM` run and an `ABSTAIN` run producing the
+same fingerprint is asserted end-to-end by test.
+
+A **veto** does change the outcome, so it is tracked *beside* the fingerprint
+rather than folded into it. Merging them would destroy the ability to prove the
+property above.
+
+If a replay diverges, the differing field is named. "Not reproducible" alone is
+useless; an auditor needs to know which field moved.
+
+---
+
+## Command centre
+
+```bash
+python scripts/build_dashboard.py && open data/dashboard.html
+```
+
+Self-contained HTML generated from the real decision store — no server, no CDN,
+no network (asserted by test). The hero is not P&L; it is the **separation of
+authority**, three lanes per decision:
+
+| Lane | Role | Shows |
+|---|---|---|
+| **AI** | advisory | CONFIRM / ABSTAIN / VETO, and `changed outcome: YES/NO` |
+| **DETERMINISTIC** | authority | verdict, checks passed, the rule that blocked |
+| **EXECUTION** | outcome | contract, contracts, max loss vs budget |
+
+It also answers **"why we did NOT trade"**, attributing every declined decision
+to the layer that stopped it. Most systems only show the trades they took.
+
+---
+
+## Backtest — and what it deliberately refuses to measure
+
+```bash
+python -m pytest tests/unit/evaluation -q
+```
+
+Walk-forward validation with cost sensitivity on the **underlying S07 signal**.
+
+**It does not backtest the options strategy, and that is a data fact rather than
+a shortcut.** Doing so needs historical option chains — bid/ask per contract per
+day — which this repository does not have. The only way to produce option prices
+without them is a pricing model plus a volatility assumption, and a backtest
+built that way measures *the pricing model*, not the strategy. So the question
+the data supports is answered and options P&L is left unanswered rather than
+answered wrongly.
+
+Integrity properties, each mutation-tested: look-ahead is prevented structurally
+(`bars[:i]` decides, `bars[i:]` resolves, never overlapping); a bar containing
+both stop and target scores as a **loss**, because OHLC cannot reveal intrabar
+order; unresolved trades are excluded rather than counted as wins; and with no
+trades the win rate is `None`, not `0.0`. **No Sharpe ratio** — on a few dozen
+trades it would imply confidence the sample cannot support.
 
 ---
 
@@ -189,8 +270,11 @@ a reviewer catches:
 
 - **S01–S14** — only **S07** is ported. Inventing the others would violate the
   quant integrity rule that formulas come from the source, not from a model.
-- **Vertical spreads** — the structure is pluggable and `VERTICAL_DEBIT` is
-  declared, but it is *explicitly refused* rather than silently downgraded.
+- **Vertical spreads** — declared as `VERTICAL_DEBIT` and *explicitly refused*
+  rather than silently downgraded. Evaluated and rejected for this submission:
+  a two-leg order can leg out and leave an unhedged position, and spreads need a
+  higher options approval level that could make the demo fail on the operator's
+  actual account. Reliability before feature count.
 - **Greeks** — Alpaca exposes them; selection is by moneyness and DTE, which are
   exact and need no pricing model. No delta target is claimed.
 - **Memory / reflection / outcome analysis** — the decision journal provides the

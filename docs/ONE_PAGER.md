@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 732 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 769 tests
 
 ---
 

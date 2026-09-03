@@ -2,7 +2,7 @@
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 732 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 769 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -96,7 +96,7 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 732 passed
+python -m pytest -q                          # 769 passed
 ```
 
 | Scenario | Demonstrates |

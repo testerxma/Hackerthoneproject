@@ -204,15 +204,35 @@ def stat(label: str, value: str, *, sub: str = "", colour: str = TEXT,
 #: up to the point it actually reached, so a NO TRADE is visually a journey
 #: that stopped somewhere specific rather than an absence of one.
 STAGES = [
-    ("MARKET", "snapshot"), ("QUANT", "candidate"), ("RESEARCH", "ai_review"),
-    ("BULL/BEAR", "ai_review"), ("AI VETO", "ai_review"), ("OPTIONS", "options_trace"),
-    ("RISK", "risk_gate"), ("PORTFOLIO", "risk_gate"), ("AUTH", "execution"),
+    ("MARKET", "snapshot"), ("QUANT", "candidate"), ("RISK", "risk_gate"),
+    ("OPTIONS", "options_trace"), ("AI VETO", "ai_review"), ("AUTH", "execution"),
     ("EXECUTION", "execution"), ("RECONCILE", "reconciliation"),
 ]
 
+#: Reasons `_finish` writes before a licence is ever minted, versus after the
+#: adapter has been called. Substring matching is deliberate: the orchestrator
+#: composes these prefixes with the underlying error text.
+_AUTH_REFUSED = "authorization refused"
+_SUBMITTED_UNKNOWN = "execution outcome UNKNOWN"
+
+_AUTH_IDX = 6
+_EXEC_IDX = 7
+_RECONCILE_IDX = 8
+
 
 def reached_stage(d: dict) -> int:
-    """How far this decision actually got. Drives the pipeline rendering."""
+    """How far this decision actually got, in the order the code runs.
+
+    The strip is read as a causal chain, so it must not blame a layer that
+    never saw the decision. Two rules follow from that:
+
+    * The order here is the orchestrator's order — snapshot, quant, risk
+      gate, options selection, then the AI review of an already-approved
+      trade. Showing the AI earlier would invert the one claim this project
+      makes about where authority lives.
+    * A missing field means "not recorded", which is only evidence of a stop
+      when the stage before it did record something.
+    """
     if not get(d, "snapshot"):
         return 0
     # A snapshot with no candidate did reach the quant stage — that is where
@@ -220,28 +240,56 @@ def reached_stage(d: dict) -> int:
     # a strategy that simply found no setup.
     if not get(d, "candidate"):
         return 2
-    idx = 2
-    review = get(d, "ai_review") or {}
-    if review:
-        idx = 5
-        if review.get("vetoed"):
-            return idx
-    if get(d, "options_trace"):
-        idx = 6
-    else:
-        return idx
+
     gate = get(d, "risk_gate") or {}
-    if gate:
-        idx = 8
-        if str(gate.get("verdict", "")).upper() not in {"PASS", "SCALED"}:
-            return idx
-    if get(d, "execution"):
-        idx = 10
-    else:
-        return idx
-    if get(d, "reconciliation"):
-        idx = 11
-    return idx
+    if not gate:
+        return 3
+    if str(gate.get("verdict", "")).upper() not in {"PASS", "SCALED"}:
+        return 3
+
+    # Selection and sizing share one stage: both write options_trace, and both
+    # rejections ("no tradeable contract", "one contract risks more than the
+    # budget") are the options layer declining, not the quant layer.
+    if not get(d, "options_trace"):
+        return 4
+
+    review = get(d, "ai_review") or {}
+    if review and review.get("vetoed"):
+        return 5
+
+    return _execution_reach(d)
+
+
+def _execution_reach(d: dict) -> int:
+    """How far past the AI review this decision got.
+
+    The orchestrator does not persist a structured `execution` block — the
+    broker outcome survives as the decision state plus the reason that
+    produced it. Reading only `execution` would render a decision that
+    actually reached the broker as though something upstream had stopped it.
+
+    An UNKNOWN submission counts as having reached the broker. That is the
+    conservative direction: an order may exist, and drawing it as "never left
+    the building" is precisely the mistake the safety architecture exists to
+    prevent.
+    """
+    state = str(get(d, "state") or "").upper()
+    stage = str(get(d, "rejection_stage") or "").upper()
+    reason = str(get(d, "rejection_reason") or "")
+
+    reached = 5
+    if get(d, "execution") or state in {"EXECUTING", "OPEN", "CLOSED"}:
+        reached = _EXEC_IDX                 # authorized, and submitted
+    elif stage == "REJECTED_BY_EXECUTION_GUARD":
+        reached = _EXEC_IDX                 # the broker answered, and refused
+    elif _SUBMITTED_UNKNOWN in reason:
+        reached = _EXEC_IDX                 # an order may exist; never claim otherwise
+    elif _AUTH_REFUSED in reason:
+        return _AUTH_IDX                    # stopped at the licence, before the broker
+
+    if reached == _EXEC_IDX and get(d, "reconciliation"):
+        return _RECONCILE_IDX
+    return reached
 
 
 def pipeline_html(d: dict) -> str:
@@ -268,6 +316,36 @@ def _accepted(d: dict) -> bool:
 
 
 # ---------------------------------------------------------------- sections
+def _execution_lane(d: dict, execution: dict, recon: dict) -> tuple[str, str]:
+    """What the broker lane may state, given what the record actually holds.
+
+    No structured `execution` block is persisted, so the outcome has to come
+    from the decision state and the reason beside it. Printing "not submitted"
+    whenever that block is missing would be a false negative in the one
+    direction that matters: an UNKNOWN submission may already be an order at
+    the broker, and the lane must never say otherwise.
+    """
+    if execution:
+        return (esc(execution.get("state", "none")),
+                esc(recon.get("state", "")) if recon
+                else '<span class="muted">awaiting reconciliation</span>')
+
+    state = str(get(d, "state") or "").upper()
+    stage = str(get(d, "rejection_stage") or "").upper()
+    reason = str(get(d, "rejection_reason") or "")
+
+    if state in {"EXECUTING", "OPEN", "CLOSED"}:
+        return "SUBMITTED", "awaiting reconciliation — submitted is not filled"
+    if _SUBMITTED_UNKNOWN in reason:
+        return "UNKNOWN", ("an order may exist — reconcile before any retry, "
+                           "never resubmit")
+    if stage == "REJECTED_BY_EXECUTION_GUARD":
+        return "REJECTED", "the broker answered, and refused the order"
+    if _AUTH_REFUSED in reason:
+        return "none", "authorization refused before the broker was contacted"
+    return "none", '<span class="muted">not submitted</span>'
+
+
 def decision_card(d: dict, index: int) -> str:
     symbol = esc(d.get("symbol", "?"))
     state = str(d.get("state", "")).upper()
@@ -336,6 +414,7 @@ def decision_card(d: dict, index: int) -> str:
           <tbody>{rows}</tbody></table></details>"""
 
     # --- the three authority lanes
+    exec_state, exec_note = _execution_lane(d, execution, recon)
     ai_verdict = esc(judge.get("verdict", "not consulted"))
     ai_reason = esc((judge.get("reasoning") or "")[:220])
     changed = "YES — vetoed" if vetoed else "NO"
@@ -357,8 +436,8 @@ def decision_card(d: dict, index: int) -> str:
       </div>
       <div class="lane" style="--c:{CYAN}">
         <div class="lane-h">EXECUTION · OUTCOME</div>
-        <div class="lane-v">{esc(execution.get('state', 'none') if execution else 'none')}</div>
-        <div class="lane-s">{esc(recon.get('state', '')) if recon else '<span class="muted">not submitted</span>'}</div>
+        <div class="lane-v">{exec_state}</div>
+        <div class="lane-s">{exec_note}</div>
         <div class="lane-f">SUBMITTED is never FILLED</div>
       </div>
     </div>"""

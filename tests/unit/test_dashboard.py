@@ -730,3 +730,72 @@ def test_a_real_model_is_reported_as_available_and_advisory_only(tmp_path):
     assert "AVAILABLE" in page
     assert "claude-x" in page
     assert "cannot authorize" in page
+
+
+# ==================================== the strip must blame the right layer
+#
+# The pipeline strip is read as a causal chain, so a wrong stop point is not a
+# cosmetic bug — it accuses a layer that never saw the decision. Two ways it
+# used to lie, both pinned below:
+#
+#   * The strip listed the AI before options and risk, inverting the one claim
+#     this project makes about where authority lives.
+#   * It derived the broker outcome from an `execution` block the orchestrator
+#     never persists, so every decision that actually reached Alpaca rendered
+#     as though something upstream had stopped it.
+
+
+def test_the_strip_runs_in_the_order_the_code_runs():
+    """Risk and options precede the AI, because the AI reviews an approved trade."""
+    order = [label for label, _ in dash.STAGES]
+    assert order.index("RISK") < order.index("AI VETO")
+    assert order.index("OPTIONS") < order.index("AI VETO")
+    assert order.index("AI VETO") < order.index("EXECUTION")
+
+
+def test_no_tradeable_contract_blames_the_options_layer_not_the_quant():
+    d = decision(state="REJECTED", rejection_stage="REJECTED_BY_RISK_ENGINE",
+                 rejection_reason="no tradeable contract: spread too wide",
+                 options_trace=None, ai_review=None)
+    page = dash.build([d], simulated=True)
+    assert _stage_class(page, "QUANT") == "pl-done", "S07 did fire"
+    assert _stage_class(page, "OPTIONS") == "pl-stop"
+
+
+def test_an_unaffordable_contract_blames_the_options_layer():
+    d = decision(state="REJECTED", rejection_stage="REJECTED_BY_RISK_ENGINE",
+                 rejection_reason="options sizing rejected: one contract risks "
+                                  "6200.00, over the 1000.00 budget",
+                 options_trace=None, ai_review=None)
+    page = dash.build([d], simulated=True)
+    assert _stage_class(page, "OPTIONS") == "pl-stop"
+
+
+def test_a_submitted_decision_reaches_execution_without_an_execution_block():
+    """`execution` is never persisted; EXECUTING is the evidence of submission."""
+    d = decision(state="EXECUTING")
+    assert not d.get("execution")
+    page = dash.build([d], simulated=True)
+    assert _stage_class(page, "AUTH") == "pl-done"
+    assert _stage_class(page, "EXECUTION") == "pl-done"
+
+
+def test_an_unknown_outcome_is_never_drawn_as_never_submitted():
+    """The dangerous direction: an order may exist at the broker."""
+    d = decision(state="FAILED",
+                 rejection_reason="execution outcome UNKNOWN, reconcile before "
+                                  "retrying: no response in 5s")
+    page = dash.build([d], simulated=True)
+    assert _stage_class(page, "EXECUTION") == "pl-stop"
+    assert "UNKNOWN" in page
+    assert "an order may exist" in page
+    assert "not submitted" not in page
+
+
+def test_a_refused_licence_stops_before_the_broker():
+    d = decision(state="FAILED",
+                 rejection_reason="authorization refused: ValueError: stale")
+    page = dash.build([d], simulated=True)
+    assert _stage_class(page, "AUTH") == "pl-stop"
+    assert _stage_class(page, "EXECUTION") == "pl-todo"
+    assert "authorization refused before the broker was contacted" in page

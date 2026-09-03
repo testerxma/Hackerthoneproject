@@ -41,7 +41,7 @@ pip install -e ".[live]"      # MCP broker transport
 python scripts/run_options_demo.py --replay --dashboard
 
 # the full test suite
-python -m pytest -q                          # 1116 passed, 1 skipped
+python -m pytest -q                          # 1122 passed, 1 skipped
 
 # mutation testing — proves every safety guard is load-bearing, not decorative
 python scripts/mutation_test.py               # 78 mutants: 76 killed, 2 equivalent
@@ -160,11 +160,14 @@ object.
 
 ## 7. Numbers, as of the final commit
 
-- **1116 tests passing**, 1 skipped
-- **49 mutation tests**: 76 killed, 0 survived, 2 declared equivalent (with the
+- **1122 tests passing**, 1 skipped
+- **78 mutation tests**: 76 killed, 0 survived, 2 declared equivalent (with the
   argument for why, and the harness fails if either is ever actually killed —
   that would mean the argument was wrong)
-- **2 real orders placed** on the Alpaca paper API through the full stack
+- **2 real orders placed** on the Alpaca paper API through the full stack —
+  both on the *development* account (`PA39QVA871BG`) during integration work,
+  both submitted pre-market, neither filled. The dedicated submission account
+  `PA3FJIP2GIRB` has received no orders, so its P&L is $0.00 (§11)
 - **3 live-only defects found and fixed**, each pinned by a regression test
   and a mutation test
 - CI runs on Python 3.11 and 3.12, plus a dedicated mutation-testing job and a

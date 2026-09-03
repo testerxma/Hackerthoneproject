@@ -8,7 +8,7 @@ real generated command centre is <code>data/dashboard.html</code>.</i></sub>
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 1116 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 1122 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -25,9 +25,11 @@ every claim in this README.
 
 | | |
 |---|---|
-| **Team** | _TODO — owner to fill in team name and contact email before submitting_ |
+| **One-page write-up** | [`docs/ONE_PAGER.md`](docs/ONE_PAGER.md) — AI logic, risk gates, Alpaca infrastructure |
+| **Engineering log** | [`docs/SUBMISSION.md`](docs/SUBMISSION.md) — what was built, what was rejected, and why |
+| **Paper account** | `PA3FJIP2GIRB` · dedicated to this hackathon · $100,000 starting balance |
 | **License** | [MIT](LICENSE) |
-| **Live verification** | Real paper orders placed via Alpaca's official MCP server (see [Live Alpaca](#live-alpaca)) |
+| **Team** | ⚠️ **Owner to complete before submitting** — team name and contact email |
 
 ---
 
@@ -82,7 +84,8 @@ nothing** — not "block everything".
 | Model says VETO with a reason | **Trade cancelled** |
 
 If an LLM outage vetoed instead, a vendor going down would silently halt all
-trading. Mutation testing confirms it: making failures veto breaks 22 tests.
+trading. Mutation testing confirms it: `veto-on-failure` — making a model
+failure veto instead of abstain — breaks 23 tests at this commit.
 
 ---
 
@@ -114,7 +117,7 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 1116 passed
+python -m pytest -q                          # 1122 passed
 python scripts/mutation_test.py              # 78 mutants; every guard is load-bearing
 ```
 
@@ -135,7 +138,9 @@ cat data/decisions/decisions-*.jsonl | head -1 | python -m json.tool
 
 Every record carries the snapshot, the signal, **the cost assumptions behind its
 EV**, all 22 deterministic checks, the contract chosen *and what was rejected and
-why*, the AI review with the model that produced it, and the execution outcome.
+why*, the AI review with the model that produced it, and the state the decision
+ended in with the reason for it — including `UNKNOWN`, where an order may exist
+and reconciliation, not a retry, is what resolves it.
 
 ### And against the real broker
 
@@ -185,6 +190,11 @@ $ python scripts/run_options_demo.py --replay
   6/6 decisions re-derived from their stored snapshot alone, with the AI
   never consulted.
 ```
+
+Six is what a fresh clone shows: the journal ships empty, this command writes
+the six demo decisions and then replays them. The journal is append-only, so a
+second run replays twelve — the count is every decision ever stored, not a fixed
+figure.
 
 The 16-character fingerprint identifies **what the deterministic system
 decided**, and it **excludes the AI review by construction**. So the same market
@@ -366,8 +376,17 @@ F261002C00013500       qty 1  limit 0.98  accepted   coid st-8997ba2ba6cef1a…
 SOFI261002C00017000    qty 1  limit 1.50  accepted   id ffeb8132-de46-4a15-8f26-fe476fcb6995
 ```
 
-Doing this found two bugs that no offline test could have found, and both are
-now regression-tested:
+Those two orders were placed on the **development** paper account
+(`PA39QVA871BG`) during integration work, before the dedicated submission
+account existed. They were submitted pre-market, never became marketable, and
+never filled. The hackathon account `PA3FJIP2GIRB` is a separate, dedicated
+account created for this submission; no order in this repository's execution
+journal was ever sent to it, so its P&L is **$0.00 with zero fills**. That is
+stated rather than disguised.
+
+Two of the three live-only defects surfaced here, and both are now
+regression-tested — the third, `lookback-calendar-units`, is described
+[above](#and-against-the-real-broker):
 
 1. **Alpaca caps the latest-quote endpoint at 100 symbols.** A 354-contract AAPL
    chain returned `symbol limit is 100`, so no contract could ever be priced.

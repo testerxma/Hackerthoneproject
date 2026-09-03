@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 896 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 905 tests
 
 ---
 
@@ -74,7 +74,7 @@ resolved by reconciliation against the broker, never by a retry that could
 double-fill — the idempotency key is the same single-use nonce.
 
 Every guard is **mutation-tested by a harness that runs in CI**
-(`scripts/mutation_test.py`, 41 mutants: 39 killed, 0 survived, 2 declared
+(`scripts/mutation_test.py`, 42 mutants: 40 killed, 0 survived, 2 declared
 equivalent with the argument for why). Each mutant is a reviewable edit to real
 source. The harness fails if a declared equivalent is ever killed, or if a
 mutant's anchor disappears in a refactor — so the score cannot be padded. It
@@ -99,13 +99,17 @@ Python's recursion limit.
   not silently mispriced, because the schedule adds $0.50/contract this model does
   not apply.
 - **Paper is forced in three independent places**; live is refused structurally.
-- **Verified live, not only against mocks.** The full stack has placed real
-  orders on a paper account (`SOFI261002C00017000`, `F261002C00013500`). Doing so
-  exposed two bugs mocks could not: Alpaca's 100-symbol quote cap, and a
-  two-level MCP envelope that made a *successful* submission read as `UNKNOWN`.
-  The safety chain then did its job — the adapter refused to claim a fill it
-  could not see, reconciliation found the order `ACCEPTED` at the broker, and
-  the retry was refused. An ambiguous success stayed one order.
+- **Verified live, not only against mocks** — `scripts/run_live_paper.py` runs the
+  same pipeline on Alpaca's bars, chain, quotes and balances, and has placed real
+  orders (`SOFI261002C00017000`, `F261002C00013500`). It sends nothing without
+  `--submit`, and refuses `--submit` with `--allow-stale`. Doing this found three
+  bugs mocks could not: the 100-symbol quote cap; a two-level MCP envelope that
+  made a *successful* submission read `UNKNOWN`; and a bar window computed in
+  calendar rather than trading hours, which returned 660 of the 891 bars an
+  EMA200 needs and so refused **every** hourly symbol — failing closed, and
+  unable to fail any other way. The safety chain held throughout: the adapter
+  refused to claim a fill it could not see, reconciliation found the order
+  `ACCEPTED`, and the retry was refused. An ambiguous success stayed one order.
 
 ---
 

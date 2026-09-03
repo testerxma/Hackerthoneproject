@@ -138,3 +138,62 @@ def test_fixture_directory_roundtrip(tmp_path):
     assert len(loaded) == 20
     assert loaded[-1].c == pytest.approx(bars[-1].c)
     assert validate_bars(loaded, min_required=20)[0]
+
+
+# ============================ the bar-request window is in the wrong unit
+# Alpaca's bars endpoint is bounded by a wall-clock START time, but a request is
+# framed in BARS. A calendar week holds 168 hours and only ~32.5 regular market
+# hours, so an intraday window computed in calendar time under-delivers about
+# five to one.
+#
+# Found by running the live script, not by a fixture: at the old factor of 3.0 a
+# request for the 891 hourly bars an EMA200 needs to converge came back with 660,
+# so the snapshot builder refused EVERY hourly symbol for want of history. It
+# failed closed, which is correct — but it could never have failed any other way.
+# The system was structurally unable to trade its own default timeframe.
+
+from speedtrader.alpaca.market_data import AlpacaMarketData  # noqa: E402
+
+#: 6.5 regular market hours a day, five days in seven.
+TRADING_HOURS_PER_CALENDAR_HOUR = (6.5 * 5) / (24 * 7)
+
+
+@pytest.mark.parametrize("timeframe,seconds_per_bar", [
+    ("1Min", 60), ("5Min", 300), ("15Min", 900), ("30Min", 1_800),
+    ("1Hour", 3_600), ("4Hour", 14_400),
+])
+def test_an_intraday_window_covers_the_bars_it_asks_for(timeframe, seconds_per_bar):
+    """The requested window must contain `limit` TRADING bars, not `limit`
+    calendar ones. Priced with regular hours only, so extended-hours bars are
+    margin rather than the thing that makes it work."""
+    limit = 891
+    span = AlpacaMarketData._lookback_span(timeframe, limit)
+    calendar_bars = span.total_seconds() / seconds_per_bar
+    assert calendar_bars * TRADING_HOURS_PER_CALENDAR_HOUR >= limit
+
+
+def test_the_daily_window_covers_weekends():
+    """Five trading days per seven calendar days, plus holidays."""
+    limit = 300
+    span = AlpacaMarketData._lookback_span("1Day", limit)
+    assert span.total_seconds() / 86_400 * (5 / 7) >= limit
+
+
+def test_the_hourly_window_reaches_ema200_convergence():
+    """The regression itself, in the exact shape that broke: the default
+    timeframe must be able to supply the bars the default feature set needs."""
+    from speedtrader.quant.features import FeatureEngine
+
+    needed = FeatureEngine().recommended_bars()
+    span = AlpacaMarketData._lookback_span("1Hour", needed)
+    available = span.total_seconds() / 3_600 * TRADING_HOURS_PER_CALENDAR_HOUR
+    assert available >= needed, (
+        f"a {span.days}-day window yields ~{available:.0f} regular-hours bars, "
+        f"short of the {needed} an EMA200 needs — the snapshot builder would "
+        f"refuse every symbol"
+    )
+
+
+def test_an_unknown_timeframe_is_refused_rather_than_defaulted():
+    with pytest.raises(KeyError):
+        AlpacaMarketData._lookback_span("3Hour", 100)

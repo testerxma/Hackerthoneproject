@@ -106,14 +106,31 @@ class AlpacaMarketData:
         bars.sort(key=lambda b: b.t)
         return bars
 
+    #: Calendar time per unit of TRADING time. A calendar week holds 168 hours
+    #: but only about 32.5 regular market hours, so an intraday request framed
+    #: in wall-clock time under-delivers by roughly five to one. Alpaca's
+    #: intraday bars include extended hours, which softens that to about 3.7;
+    #: 6.0 leaves room for holidays and early closes.
+    #:
+    #: This is not a tuning constant, it is a correction for a unit mismatch,
+    #: and getting it wrong is not a near miss. Found live: at the previous
+    #: value of 3.0 a request for the 891 hourly bars an EMA200 needs to
+    #: converge returned 660, so the snapshot builder refused EVERY hourly
+    #: symbol for want of history. It failed closed, which is right, but it
+    #: could never have failed any other way — the system was structurally
+    #: unable to trade its default timeframe and the fixtures could not show it.
+    INTRADAY_CALENDAR_FACTOR = 6.0
+    #: Five trading days per seven calendar days, plus holidays.
+    DAILY_CALENDAR_FACTOR = 1.6
+
     @staticmethod
     def _lookback_span(timeframe: str, limit: int) -> timedelta:
         per_bar = {
             "1Min": 60, "5Min": 300, "15Min": 900, "30Min": 1_800,
             "1Hour": 3_600, "4Hour": 14_400, "1Day": 86_400,
         }[timeframe]
-        # x3 covers nights and weekends for intraday; x1.6 is enough for daily bars.
-        factor = 1.6 if timeframe == "1Day" else 3.0
+        factor = (AlpacaMarketData.DAILY_CALENDAR_FACTOR if timeframe == "1Day"
+                  else AlpacaMarketData.INTRADAY_CALENDAR_FACTOR)
         return timedelta(seconds=per_bar * limit * factor)
 
     def get_latest_quote(self, symbol: str) -> dict | None:

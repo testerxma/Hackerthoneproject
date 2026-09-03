@@ -97,6 +97,7 @@ class AlpacaClient:
         self.feed = feed
         self._trading = None
         self._stock_data = None
+        self._option_data = None
 
     # -- lazy SDK handles -------------------------------------------------
     @property
@@ -125,6 +126,25 @@ class AlpacaClient:
                 secret_key=self.credentials.secret_key,
             )
         return self._stock_data
+
+    @property
+    def option_data(self):
+        """Option quotes come from a DIFFERENT client than stock bars.
+
+        Separate handle on purpose: they are separate entitlements at Alpaca,
+        so an account with market data but no options entitlement fails at the
+        options call rather than appearing to work.
+        """
+        if self._option_data is None:
+            try:
+                from alpaca.data.historical.option import OptionHistoricalDataClient
+            except ImportError as e:  # pragma: no cover
+                raise AlpacaUnavailable("alpaca-py is not installed: pip install alpaca-py") from e
+            self._option_data = OptionHistoricalDataClient(
+                api_key=self.credentials.api_key,
+                secret_key=self.credentials.secret_key,
+            )
+        return self._option_data
 
     # -- health -----------------------------------------------------------
     def ping(self) -> bool:

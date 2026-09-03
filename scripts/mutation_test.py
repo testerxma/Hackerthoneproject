@@ -33,6 +33,7 @@ survives.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import subprocess
 import sys
@@ -223,6 +224,12 @@ MUTANTS: list[Mutant] = [
            "    if size is None or size <= 0:\n        size = STANDARD_CONTRACT_MULTIPLIER",
            "an adjusted contract is assumed to deliver 100 shares",
            ("unit/test_options_data_mapping.py",)),
+    Mutant("lookback-calendar-units", "alpaca/market_data.py",
+           "INTRADAY_CALENDAR_FACTOR = 6.0",
+           "INTRADAY_CALENDAR_FACTOR = 3.0",
+           "the bar window is priced in calendar time, so an EMA200 never "
+           "converges and every hourly symbol is refused",
+           ("unit/test_alpaca_layer.py",)),
     Mutant("quote-batch-uncapped", "alpaca/options_data.py",
            "QUOTE_BATCH_LIMIT = 100",
            "QUOTE_BATCH_LIMIT = 500",
@@ -311,8 +318,31 @@ def _run_tests(paths: tuple[str, ...]) -> tuple[bool, str]:
         [sys.executable, "-m", "pytest", "-x", "-q", "--no-header", "-p",
          "no:cacheprovider", *targets],
         cwd=ROOT, capture_output=True, text=True,
+        # CPython invalidates a .pyc on (mtime, size). Most mutants here are
+        # the same LENGTH as the code they replace and are written within the
+        # same filesystem timestamp tick, so a .pyc compiled from mutated
+        # source can outlive the restore and be served to a LATER run. That
+        # bit this harness during development: a full suite run after a
+        # mutation run failed against source that was already correct.
+        # Not writing bytecode at all removes the whole class of problem.
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+
+
+def _purge_bytecode(rel_paths) -> None:
+    """Drop any cached bytecode for the files being mutated.
+
+    Belt and braces alongside PYTHONDONTWRITEBYTECODE: a .pyc written before
+    this run started is just as capable of hiding a restore.
+    """
+    for rel in rel_paths:
+        cache = (SRC / rel).parent / "__pycache__"
+        if not cache.is_dir():
+            continue
+        stem = Path(rel).stem
+        for pyc in cache.glob(f"{stem}.*.pyc"):
+            pyc.unlink(missing_ok=True)
 
 
 def _summary_line(output: str) -> str:
@@ -363,6 +393,7 @@ def main() -> int:
     def restore(*_a) -> None:
         for rel, text in originals.items():
             (SRC / rel).write_text(text)
+        _purge_bytecode(originals)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *a: (restore(), sys.exit(130)))
@@ -379,6 +410,7 @@ def main() -> int:
                       f"({source.count(m.old)} matches) — guard refactored?")
                 continue
             (SRC / m.path).write_text(source.replace(m.old, m.new, 1))
+            _purge_bytecode([m.path])
             passed, output = _run_tests(m.tests)
             restore()
             if passed and m.equivalent:

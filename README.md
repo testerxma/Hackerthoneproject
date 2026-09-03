@@ -2,7 +2,7 @@
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 896 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 905 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -97,7 +97,8 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 896 passed
+python -m pytest -q                          # 905 passed
+python scripts/mutation_test.py              # 42 mutants; every guard is load-bearing
 ```
 
 | Scenario | Demonstrates |
@@ -118,6 +119,35 @@ cat data/decisions/decisions-*.jsonl | head -1 | python -m json.tool
 Every record carries the snapshot, the signal, **the cost assumptions behind its
 EV**, all 22 deterministic checks, the contract chosen *and what was rejected and
 why*, the AI review with the model that produced it, and the execution outcome.
+
+### And against the real broker
+
+The demo above is deterministic and offline, which is what makes it a
+*demonstration*. `run_live_paper.py` is the same pipeline with Alpaca supplying
+the bars, the option chain, the quotes and the account balance:
+
+```bash
+python scripts/run_live_paper.py --scan                # decide across a watchlist
+python scripts/run_live_paper.py --symbol SPY          # one name, no order sent
+python scripts/run_live_paper.py --symbol SPY --submit # actually place it
+```
+
+**The default sends nothing.** Without `--submit` the orchestrator is not given a
+broker reference at all, so a dry run is structural rather than a flag someone
+can forget. `--allow-stale` lets you watch the pipeline outside market hours and
+is **refused together with `--submit`**: trading on a stale bar is the exact
+thing the freshness gate exists to prevent.
+
+Running it is not a formality — three real defects in this repository were found
+only this way, and each is now pinned by a mutant (`quote-batch-uncapped`,
+`envelope-unbounded`, `lookback-calendar-units`). The third is the instructive
+one: Alpaca's bar request is bounded by a wall-clock start time, but a strategy
+asks in *bars*, and a calendar week holds 168 hours against ~32.5 market hours.
+The window was computed in the wrong unit, so a request for the 891 hourly bars
+an EMA200 needs returned 660 and the snapshot builder refused **every** hourly
+symbol. It failed closed, correctly — and could never have failed any other way.
+No fixture would have shown that, because a fixture returns the bars you wrote
+into it.
 
 ---
 
@@ -236,11 +266,11 @@ Critical logic is **mutation-tested, reproducibly**: each guard is deliberately
 broken and the suite must go red.
 
 ```bash
-python scripts/mutation_test.py          # 41 mutants; runs in CI
+python scripts/mutation_test.py          # 42 mutants; runs in CI
 python scripts/mutation_test.py --list   # see exactly what gets broken
 ```
 
-**39 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
+**40 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
 a precise, reviewable edit to real source — the exact string removed and the
 exact string put in its place — so a reviewer can judge whether breaking it
 should matter, rather than trusting a number.

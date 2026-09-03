@@ -593,6 +593,11 @@ class DecisionLog(Base):
     total_latency_ms: int | None = None
     total_token_cost: float | None = None
 
+    #: The adversarial AI review, if one ran. Records the debate, the model and
+    #: prompt version behind it, and whether it vetoed. An audit trail saying
+    #: "the AI agreed" without naming the model is not an audit trail.
+    ai_review: dict = Field(default_factory=dict)
+
     #: How the underlying signal became an options position: which contract was
     #: chosen and why, what was considered and rejected, the risk multiplier the
     #: engine applied, the sizing arithmetic and its caps, and the estimated

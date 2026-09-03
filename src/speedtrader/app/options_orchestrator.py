@@ -65,6 +65,7 @@ from ..options.contracts import (
     SelectionPolicy,
     select_contract,
 )
+from ..agents.veto import AdversarialReviewer
 from ..options.cost import OptionsCostError, estimate_options_cost
 from ..options.risk import OptionsSizingPolicy, size_option_position
 from ..quant.engine import QuantCore
@@ -100,6 +101,7 @@ class OptionsOrchestrator:
         registry: AuthorizationRegistry | None = None,
         selection_policy: SelectionPolicy | None = None,
         sizing_policy: OptionsSizingPolicy | None = None,
+        reviewer: AdversarialReviewer | None = None,
     ):
         self.quant = QuantCore(list(strategies), execution_config)
         self.risk = DeterministicRiskEngine(risk_config)
@@ -112,6 +114,10 @@ class OptionsOrchestrator:
             risk_per_trade_pct=float(risk_config.get("risk_per_trade_pct", 1.0))
         )
         self.execution_config = execution_config
+        #: Optional. Absent means no AI review ran — which is exactly the
+        #: same outcome as an AI that abstained, because this layer can
+        #: only ever subtract.
+        self.reviewer = reviewer
 
     # ------------------------------------------------------------------ #
     def run(
@@ -219,6 +225,39 @@ class OptionsOrchestrator:
                                 f"options cost not computable: {e}", False)
 
         decision.options_trace = _trace(selection, sizing, opt_cost, multiplier)
+
+        # --- 4b. Adversarial AI review (veto-only) ----------------------
+        # Runs AFTER deterministic approval, and can only subtract. A veto
+        # cancels the trade; CONFIRM, ABSTAIN, a malformed reply, a timeout and
+        # an absent reviewer are all identical in effect: change nothing.
+        if self.reviewer is not None:
+            review = self.reviewer.review({
+                "symbol": snapshot.symbol,
+                "direction": candidate.direction.value,
+                "strategy": candidate.strategy_id,
+                "score": candidate.total_score,
+                "expected_value_r": candidate.expected_value,
+                "ev_is_bootstrap": candidate.ev_is_bootstrap,
+                "underlying_price": candidate.entry,
+                "stop_loss": candidate.stop_loss,
+                "take_profit": candidate.take_profit,
+                "contract": selection.contract.symbol,
+                "strike": selection.contract.strike,
+                "expiration": selection.contract.expiration.isoformat(),
+                "days_to_expiry": selection.contract.dte(asof),
+                "premium_ask": sizing.premium_per_contract,
+                "contracts": sizing.quantity,
+                "max_loss_total": sizing.max_loss_total,
+                "risk_budget": sizing.risk_budget,
+                "open_interest": selection.contract.open_interest,
+                "estimated_fees": opt_cost.total,
+            })
+            decision.ai_review = review.to_record()
+            if review.vetoed:
+                return self._finish(
+                    decision, SystemState.REJECTED, RejectionStage.RISK_AGENT,
+                    f"AI veto: {review.judge.reasoning}", False,
+                    contract=selection.contract)
 
         if dry_run or self.adapter is None:
             return self._finish(

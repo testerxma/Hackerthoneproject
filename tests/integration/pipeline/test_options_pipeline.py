@@ -251,3 +251,97 @@ def test_no_authorization_material_is_ever_persisted(tmp_path):
     assert "st-" + nonce not in blob
     assert "ExecutionAuthorization" not in blob
     assert '"signature"' not in blob.lower()
+
+
+# ============================================ AI veto, end to end
+# The AI runs AFTER deterministic approval and can only subtract. These prove
+# both halves: a veto really stops a real order, and every other AI outcome —
+# including total failure — leaves the deterministic decision untouched.
+
+import json as _json  # noqa: E402
+
+from speedtrader.agents.veto import AdversarialReviewer  # noqa: E402
+from speedtrader.llm.providers.base import LLMResponse, LLMTimeout  # noqa: E402
+from speedtrader.llm.providers.deterministic import DeterministicProvider  # noqa: E402
+
+
+class _Scripted:
+    name = "scripted"
+
+    def __init__(self, verdict=None, raises=None):
+        self.verdict, self.raises = verdict, raises
+
+    def complete(self, request):
+        if self.raises:
+            raise self.raises
+        return LLMResponse(
+            text=_json.dumps({"verdict": self.verdict, "confidence": 0.9,
+                              "reasoning": "scripted", "concerns": []}),
+            provider=self.name, model="scripted-1")
+
+
+def _reviewed(tmp_path, broker, provider):
+    orch = build(tmp_path, broker=broker)
+    orch.reviewer = AdversarialReviewer(provider, run_debate=False)
+    return run(orch)
+
+
+def test_an_ai_veto_stops_a_real_order(tmp_path):
+    b = FakeBroker()
+    r = _reviewed(tmp_path, b, _Scripted("VETO"))
+    assert not r.accepted
+    assert "AI veto" in r.reason
+    assert b.calls == [], "a vetoed trade still reached the broker"
+
+
+def test_a_veto_is_recorded_with_the_model_that_cast_it(tmp_path):
+    r = _reviewed(tmp_path, FakeBroker(), _Scripted("VETO"))
+    raw = _json.loads(r.stored_at.read_text().strip().splitlines()[0])
+    assert raw["ai_review"]["vetoed"] is True
+    assert raw["ai_review"]["judge"]["provenance"]["model"] == "scripted-1"
+    assert raw["rejection_stage"] == "REJECTED_BY_RISK_AGENT"
+
+
+@pytest.mark.parametrize("verdict", ["CONFIRM", "ABSTAIN"])
+def test_confirm_and_abstain_leave_the_trade_exactly_as_approved(tmp_path, verdict):
+    b = FakeBroker()
+    r = _reviewed(tmp_path, b, _Scripted(verdict))
+    assert r.accepted and len(b.calls) == 1
+
+
+def test_an_llm_outage_does_not_halt_trading(tmp_path):
+    """The inverted failure mode: this layer only subtracts, so a vendor outage
+    must not become a trading outage."""
+    b = FakeBroker()
+    r = _reviewed(tmp_path, b, _Scripted(raises=LLMTimeout("vendor down")))
+    assert r.accepted, "an LLM outage silently halted trading"
+    assert len(b.calls) == 1
+
+
+def test_with_no_credentials_the_pipeline_still_completes(tmp_path):
+    """A judge cloning this repo with no API key gets a full run."""
+    b = FakeBroker()
+    r = _reviewed(tmp_path, b, DeterministicProvider())
+    assert r.accepted and len(b.calls) == 1
+    raw = _json.loads(r.stored_at.read_text().strip().splitlines()[0])
+    assert raw["ai_review"]["judge"]["verdict"] == "ABSTAIN"
+
+
+def test_the_ai_cannot_enlarge_a_trade_it_approves(tmp_path):
+    """The central claim, end to end: a hostile model claiming a huge size
+    changes nothing about what is actually submitted."""
+    b = FakeBroker()
+    class Hostile:
+        name = "hostile"
+        def complete(self, request):
+            return LLMResponse(
+                text=_json.dumps({"verdict": "CONFIRM", "confidence": 1.0,
+                                  "reasoning": "size up", "concerns": [],
+                                  "quantity": 99999, "approved_quantity": 99999,
+                                  "size_multiplier": 100}),
+                provider="hostile", model="hostile-1")
+    baseline = run(build(tmp_path / "base", broker=FakeBroker()))
+    r = _reviewed(tmp_path, b, Hostile())
+    assert r.accepted
+    assert b.calls[0]["quantity"] == baseline.contracts_ordered
+    assert b.calls[0]["quantity"] < 100

@@ -1,10 +1,24 @@
 # SpeedTrader AI — Model Routing (§97, §98, §99, §100, §101)
 version: "1.0"
 
-provider: anthropic          # §99: replaceable. Any OpenAI-compatible endpoint works.
+# PROVIDER IS REPLACEABLE. Nothing above llm/providers/base.py imports a vendor
+# SDK, so switching provider is a config change plus one adapter file — not a
+# change anywhere in agent or risk code.
+#
+#   anthropic       llm/providers/anthropic_provider.py   (implemented)
+#   deterministic   llm/providers/deterministic.py        (implemented; no credentials)
+#   openai / deepseek / openrouter / local qwen           (not implemented)
+#
+# "deterministic" is the fallback when no credentials are present: it always
+# ABSTAINS, so a clone of this repo with no API key still runs end to end and
+# produces an honest "no model was consulted" rather than invented reasoning.
+provider: anthropic
+fallback_provider: deterministic
 
+# Model ids carry NO date suffix. A date-suffixed variant (e.g.
+# "claude-haiku-4-5-20251001") is not a valid id and was corrected here.
 tiers:
-  fast:      claude-haiku-4-5-20251001
+  fast:      claude-haiku-4-5
   reasoning: claude-sonnet-5
   strongest: claude-opus-5
 

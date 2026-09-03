@@ -593,6 +593,14 @@ class DecisionLog(Base):
     total_latency_ms: int | None = None
     total_token_cost: float | None = None
 
+    #: How the underlying signal became an options position: which contract was
+    #: chosen and why, what was considered and rejected, the risk multiplier the
+    #: engine applied, the sizing arithmetic and its caps, and the estimated
+    #: fees. Structured rather than a message string so the choice can be
+    #: queried and re-derived later; a contract selection that cannot be
+    #: reviewed after the fact is not auditable.
+    options_trace: dict = Field(default_factory=dict)
+
     def all_evidence(self) -> list[Evidence]:
         return [e for r in self.analyst_reports for e in r.evidence]
 

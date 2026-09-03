@@ -2,7 +2,7 @@
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 895 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 896 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -97,7 +97,7 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 895 passed
+python -m pytest -q                          # 896 passed
 ```
 
 | Scenario | Demonstrates |
@@ -192,34 +192,69 @@ built that way measures *the pricing model*, not the strategy. So the question
 the data supports is answered and options P&L is left unanswered rather than
 answered wrongly.
 
-Integrity properties, each mutation-tested: look-ahead is prevented structurally
-(`bars[:i]` decides, `bars[i:]` resolves, never overlapping); a bar containing
-both stop and target scores as a **loss**, because OHLC cannot reveal intrabar
-order; unresolved trades are excluded rather than counted as wins; and with no
-trades the win rate is `None`, not `0.0`. **No Sharpe ratio** — on a few dozen
-trades it would imply confidence the sample cannot support.
+Integrity properties, each with the mutant that proves it: look-ahead is
+prevented structurally — `bars[:i]` decides, `bars[i:]` resolves, never
+overlapping (`backtest-look-ahead`, `backtest-entry-bar-resolves`); a bar
+containing both stop and target scores as a **loss**, because OHLC cannot reveal
+intrabar order (`backtest-optimistic-bar`); unresolved trades are excluded
+rather than counted as wins (`backtest-unresolved-as-win`); and with no trades
+the win rate is `None`, not `0.0` (`backtest-zero-win-rate`). **No Sharpe
+ratio** — on a few dozen trades it would imply confidence the sample cannot
+support.
 
 ---
 
 ## Safety properties, and how each is proven
 
-| Property | Enforcement | Proof |
-|---|---|---|
-| AI cannot enlarge a trade | schema has no such field | hostile-model test, end to end |
-| AI outage cannot halt trading | failures ABSTAIN | mutation: veto-on-failure breaks 22 tests |
-| No order without a licence | required positional arg | mutation: skipping it breaks 29 tests |
-| A licence works once | single-use nonce | 16-thread race admits exactly one winner |
-| Approve small, submit large | proposal bound by hash | any economic field change blocks |
-| Portfolio changed since approval | portfolio bound by hash | blocked before the broker |
-| Licence never persisted | not serialisable; repr redacts | nonce asserted absent from JSONL |
-| SUBMITTED ≠ FILLED | no FILLED state in the adapter | timeout → UNKNOWN, not retried |
-| Retry cannot double-fill | idempotency key = the nonce | reconciliation refuses unsafe retries |
-| Live trading | refused structurally in the constructor | CI asserts `environment: paper` |
+Each row names the mutant that proves it. Run any one of them yourself with
+`python scripts/mutation_test.py -k <id>`.
 
-Critical logic is **mutation-tested**: the guard is deliberately broken and the
-tests must fail. 34 mutants across the risk engine, options domain, cost
-provenance, authorization, execution adapter, reconciliation and the veto
-layer — all killed.
+| Property | Enforcement | Mutant that proves it |
+|---|---|---|
+| AI cannot enlarge a trade | schema has no such field | `schema-open` (+ hostile-model test, end to end) |
+| AI outage cannot halt trading | failures ABSTAIN | `veto-on-failure` |
+| The AI's one effect is subtractive | `vetoed = verdict is VETO` | `veto-inverted` |
+| Reproducibility excludes the AI | allowlisted fingerprint payload | `fingerprint-includes-ai` |
+| No order without a licence | required positional arg | `adapter-skips-verify`, `auth-any-object` |
+| A licence cannot be forged | HMAC, per-process secret | `auth-unsigned` |
+| A licence works once | single-use nonce | `auth-replay`, `auth-nonce-reusable` |
+| Approve small, submit large | proposal bound by hash | `auth-proposal-binding`, `adapter-quantity-drift` |
+| Portfolio changed since approval | portfolio bound by hash | `auth-portfolio-binding` |
+| A stale licence cannot be stretched | expiry checked before bindings | `auth-expiry` |
+| Licence never persisted | not serialisable; repr redacts | `auth-serialisable` |
+| SUBMITTED ≠ FILLED | no FILLED state in the adapter | `retry-on-open`, `partial-fill-invisible` |
+| Ambiguity is never called refusal | classifier defaults to UNKNOWN | `ambiguity-becomes-rejection` |
+| Retry cannot double-fill | idempotency key = the nonce | `retry-anything`, `adapter-idempotency-key` |
+| Max loss is exact, never rounded up | floor, priced at the ask | `size-rounds-up`, `size-prices-at-mid`, `size-forces-one` |
+| A wrong multiplier is never assumed | unconvertible size drops the contract | `size-defaults-to-100` |
+| A partial data outage is not a no-trade | one failed batch fails the fetch | `partial-chain-tolerated` |
+| An unexplained cost never becomes a number | required keys, no defaults | `cost-defaults-silently` |
+| The backtest cannot see the future | `bars[:i]` decides, `bars[i:]` resolves | `backtest-look-ahead`, `backtest-entry-bar-resolves` |
+| Live trading | refused structurally in the constructor | `live-trading-allowed` (+ CI asserts `environment: paper`) |
+
+Critical logic is **mutation-tested, reproducibly**: each guard is deliberately
+broken and the suite must go red.
+
+```bash
+python scripts/mutation_test.py          # 41 mutants; runs in CI
+python scripts/mutation_test.py --list   # see exactly what gets broken
+```
+
+**39 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
+a precise, reviewable edit to real source — the exact string removed and the
+exact string put in its place — so a reviewer can judge whether breaking it
+should matter, rather than trusting a number.
+
+The two equivalents are declared with the argument for why they cannot change
+behaviour, and the harness **fails if one of them ever gets killed** — that
+would mean the argument is wrong. It also fails if a mutant's anchor goes
+missing, which is how a refactor silently stops being covered. Padding the
+score to 100% by deleting inconvenient mutants would defeat the point.
+
+It has already earned its keep: it found that
+`test_a_deeply_nested_payload_cannot_spin` was shallower than Python's recursion
+limit, so removing the MCP parser's depth bound changed nothing and the mutant
+survived. The test now uses a genuinely self-referential payload.
 
 ---
 

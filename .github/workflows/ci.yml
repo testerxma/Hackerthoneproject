@@ -54,6 +54,29 @@ jobs:
       - name: Tests
         run: pytest -q
 
+  mutation:
+    # A green suite proves the tests pass. It does not prove they would NOTICE a
+    # safety guard being removed — which, for this system, is the whole claim.
+    # Each guard is deliberately broken and the suite must go red.
+    name: mutation testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Every safety guard must be load-bearing
+        # Non-zero if any mutant SURVIVES (a guard nothing tests), if a declared
+        # equivalent mutant turns out to be killable, or if an anchor is lost —
+        # the last meaning a guard was refactored and is silently no longer
+        # covered here.
+        run: python scripts/mutation_test.py
+
   safety-invariants:
     # These assertions are cheap and non-negotiable, so they run as their own
     # job: if the suite above is ever narrowed, these still fail loudly.

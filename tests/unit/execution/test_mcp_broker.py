@@ -218,12 +218,28 @@ def test_unwrapping_stops_at_the_object_that_has_an_id():
     assert parse_tool_result(r)["id"] == "ord_real"
 
 
-def test_a_deeply_nested_payload_cannot_spin():
-    """Bounded descent: a malformed or self-referential payload must terminate."""
+def test_a_deeply_nested_payload_terminates():
     deep = {"id": "bottom"}
     for _ in range(40):
         deep = {"data": deep}
     parse_tool_result(Result(structured=deep))     # must return, not hang
+
+
+def test_a_self_referential_payload_cannot_spin():
+    """The descent is bounded by DEPTH, not by eventually finding an id.
+
+    A payload that contains itself has no bottom. Without the depth limit this
+    recurses until the interpreter stops it, and a broker reply that hangs the
+    submission path is worse than one we cannot read: UNKNOWN is recoverable,
+    a wedged process is not.
+
+    Found by mutation testing — the previous 40-deep fixture was shallower than
+    Python's recursion limit, so removing the depth guard changed nothing and
+    the mutant survived.
+    """
+    cycle: dict = {}
+    cycle["data"] = cycle
+    assert parse_tool_result(Result(structured=cycle)) is not None
 
 
 def test_an_envelope_with_no_order_id_still_yields_no_id():

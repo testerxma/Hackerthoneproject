@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 895 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 896 tests
 
 ---
 
@@ -73,8 +73,13 @@ no code path around it. `SUBMITTED` is never `FILLED`; a timeout is `UNKNOWN` an
 resolved by reconciliation against the broker, never by a retry that could
 double-fill — the idempotency key is the same single-use nonce.
 
-Every guard is **mutation-tested** (34 mutants, all killed): skipping licence
-verification breaks 29 tests; allowing unsafe retries breaks 13.
+Every guard is **mutation-tested by a harness that runs in CI**
+(`scripts/mutation_test.py`, 41 mutants: 39 killed, 0 survived, 2 declared
+equivalent with the argument for why). Each mutant is a reviewable edit to real
+source. The harness fails if a declared equivalent is ever killed, or if a
+mutant's anchor disappears in a refactor — so the score cannot be padded. It
+found a real gap on its first run: a depth-bound test that was shallower than
+Python's recursion limit.
 
 ---
 

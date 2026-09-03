@@ -525,3 +525,208 @@ def test_the_audit_panel_marks_a_veto_as_the_ai_changing_the_outcome():
     page = dash.build([decision(state="REJECTED", ai_review={
         "vetoed": True, "judge": {"verdict": "VETO"}})], simulated=True)
     assert "AI changed outcome" in page
+
+
+# ============================================ options opportunity inspector
+# Options are the hackathon's core requirement: "why THIS contract" must be
+# answerable, and the max-loss figure must stay true.
+
+def _opt_decision(**kw):
+    d = decision()
+    d["options_trace"] = {
+        "structure": "long_single",
+        "contract": {"symbol": "DEMO260930C00105500", "type": "call",
+                     "strike": 105.5, "expiration": "2026-09-30",
+                     "multiplier": 100, "open_interest": 800,
+                     "bid": 3.0, "ask": 3.2},
+        "selection": {"considered": 3,
+                      "reason": "nearest-the-money call at strike 105.5"},
+        "sizing": {"contracts": 3, "premium_per_contract": 3.2,
+                   "max_loss_per_contract": 320.0, "max_loss_total": 960.0,
+                   "risk_budget": 1000.0, "caps_applied": []},
+        "estimated_fees": {"model": "per_contract", "total": 2.4},
+    }
+    d["snapshot"]["timestamp"] = "2026-09-03T15:30:00Z"
+    d.update(kw)
+    return d
+
+
+def test_the_options_panel_shows_the_full_quote_not_just_the_ask():
+    page = dash.build([_opt_decision()], simulated=True)
+    assert "BID / ASK" in page and "SPREAD" in page
+    assert "priced at the <b>ask</b>" in page
+
+
+def test_max_loss_is_shown_all_in_and_labelled_exact():
+    page = dash.build([_opt_decision()], simulated=True)
+    assert "962.40" in page, "premium plus fees, not premium alone"
+    assert "EXACT" in page and "ESTIMATED" in page
+
+
+def test_max_profit_is_never_printed_as_a_number():
+    """A big figure beside an exact max loss invites a false expectation."""
+    page = dash.build([_opt_decision()], simulated=True)
+    assert "unbounded for a long call" in page
+    assert "Max profit:" in page
+
+
+def test_the_panel_explains_why_this_contract_was_selected():
+    page = dash.build([_opt_decision()], simulated=True)
+    assert "Selected because:" in page
+    assert "nearest-the-money" in page
+    assert "3 contract(s) considered" in page
+
+
+def test_thin_open_interest_is_flagged_rather_than_shown_bare():
+    d = _opt_decision()
+    d["options_trace"]["contract"]["open_interest"] = 12
+    assert "thin" in dash.build([d], simulated=True)
+
+
+def test_a_decision_with_no_contract_renders_no_options_panel():
+    page = dash.build([decision(options_trace=None)], simulated=True)
+    assert "WHY THIS CONTRACT" not in page
+
+
+def test_a_hostile_selection_reason_cannot_inject_markup():
+    d = _opt_decision()
+    d["options_trace"]["selection"]["reason"] = "<script>x()</script>"
+    assert "<script>x()</script>" not in dash.build([d], simulated=True)
+
+
+# ============================================ why / why-not cards
+
+def test_an_authorized_decision_gets_a_why_this_trade_card():
+    page = dash.build([_opt_decision()], simulated=True)
+    assert "WHY THIS TRADE?" in page
+    assert "AUTHORIZED</b> by the deterministic layer, not by the AI" in page
+
+
+def test_a_rejected_decision_gets_a_why_not_trade_card_naming_the_blocker():
+    page = dash.build([decision(state="REJECTED", risk_gate={
+        "verdict": "REJECT",
+        "checks": [{"rule": "portfolio_heat", "passed": False, "observed": 0.9}]})],
+        simulated=True)
+    assert "WHY NOT TRADE?" in page
+    assert "EXECUTION BLOCKED" in page
+    assert "PORTFOLIO_HEAT" in page
+
+
+def test_a_veto_card_attributes_the_block_to_the_advisory_layer():
+    page = dash.build([decision(state="REJECTED", ai_review={
+        "vetoed": True, "judge": {"verdict": "VETO", "reasoning": "r"}})],
+        simulated=True)
+    assert "WHY NOT TRADE?" in page
+    assert "advisory layer" in page
+
+
+def test_the_card_counts_evidence_both_ways():
+    page = dash.build([decision(risk_gate={"verdict": "PASS", "checks": [
+        {"rule": "a", "passed": True, "observed": 1},
+        {"rule": "b", "passed": False, "observed": 2}]})], simulated=True)
+    assert "supporting" in page and "contradicting" in page
+
+
+def test_the_new_panels_still_add_no_javascript():
+    page = dash.build([_opt_decision()], simulated=False, account=ACCOUNT,
+                      intents=[{"client_order_id": "x", "phase": "submitted"}])
+    for bad in ("<script", "http://", "https://", "onerror=", "onclick=",
+                "javascript:"):
+        assert bad not in page, f"page reaches for {bad}"
+
+
+# ============================================ analytics honesty
+# The account has zero fills. These panels must make that look like a factual
+# state professionally reported, never like a gap to be filled with a statistic.
+
+def test_the_funnel_withholds_rates_below_the_sample_threshold():
+    page = dash.build([decision() for _ in range(3)], simulated=True)
+    assert "Counts only." in page
+    assert f"{dash.MIN_SAMPLE_FOR_RATES}-decision threshold" in page
+
+
+def test_the_funnel_reports_rates_once_the_sample_is_large_enough():
+    page = dash.build([decision() for _ in range(dash.MIN_SAMPLE_FOR_RATES)],
+                      simulated=True)
+    assert "Counts only." not in page
+    assert "not performance" in page
+
+
+def test_the_funnel_counts_are_real_not_derived_from_a_rate():
+    page = dash.build([decision(), decision(state="REJECTED", ai_review={
+        "vetoed": True, "judge": {"verdict": "VETO"}})], simulated=True)
+    assert "Quant produced a signal" in page
+    assert "AI vetoed" in page
+
+
+def test_strategy_analytics_never_claims_a_win_rate():
+    # Whitespace-normalised: the copy wraps across lines in the generated HTML.
+    page = " ".join(dash.build([decision()], simulated=True).split())
+    assert "no performance claim" in page
+    assert "undefined without resolved trades" in page
+
+
+def test_strategy_analytics_says_why_it_withholds_rather_than_printing_zero():
+    """Printing 0.0 would invite reading absence of evidence as evidence."""
+    page = dash.build([decision()], simulated=True)
+    assert "Printing 0.0 would invite" in page
+
+
+def test_no_strategy_signal_is_stated_rather_than_shown_as_an_empty_table():
+    page = dash.build([decision(candidate=None, state="REJECTED")], simulated=True)
+    assert "No strategy produced a signal" in page
+
+
+@pytest.mark.parametrize("word", ["sharpe", "alpha", "win rate", "profitab"])
+def test_no_performance_metric_is_ever_asserted_as_a_value(word):
+    """Each of these may appear only as a disclaimer, never as a number."""
+    page = dash.build([decision() for _ in range(25)], simulated=True).lower()
+    idx = page.find(word)
+    while idx != -1:
+        context = page[max(0, idx - 120):idx + 60]
+        assert any(neg in context for neg in
+                   ("no ", "not ", "never", "undefined", "without", "insufficient")), \
+            f"'{word}' appears without a negating qualifier: {context!r}"
+        idx = page.find(word, idx + 1)
+
+
+# ============================================ AI provider honesty
+# Found by looking at the rendered page: a placeholder was being listed as a
+# model name, and a scripted stand-in was reported as an available AI.
+
+def test_a_placeholder_is_never_listed_as_a_model_name(tmp_path):
+    """provenance.model == "none" means no model answered, not a model called
+    "none"."""
+    d = decision(ai_review={"vetoed": False, "judge": {
+        "verdict": "ABSTAIN", "provenance": {"model": "none"}}})
+    page = dash.build([d], simulated=False, journal_dir=tmp_path)
+    assert "model(s): none" not in page
+    assert "NOT CONSULTED" in page
+
+
+@pytest.mark.parametrize("placeholder", ["", "none", "N/A", "unknown", "-"])
+def test_every_placeholder_form_is_treated_as_no_model(tmp_path, placeholder):
+    d = decision(ai_review={"vetoed": False, "judge": {
+        "verdict": "ABSTAIN", "provenance": {"model": placeholder}}})
+    page = dash.build([d], simulated=False, journal_dir=tmp_path)
+    assert "NOT CONSULTED" in page
+
+
+def test_a_scripted_provider_is_not_reported_as_an_available_ai(tmp_path):
+    """A deterministic stand-in is not a language model; calling it AVAILABLE
+    would overstate what actually reviewed these decisions."""
+    d = decision(ai_review={"vetoed": False, "judge": {
+        "verdict": "CONFIRM", "provenance": {"model": "scripted-demo-1"}}})
+    page = dash.build([d], simulated=False, journal_dir=tmp_path)
+    assert "SCRIPTED" in page
+    assert "not a language model" in page
+    assert "No LLM reviewed these decisions" in page
+
+
+def test_a_real_model_is_reported_as_available_and_advisory_only(tmp_path):
+    d = decision(ai_review={"vetoed": False, "judge": {
+        "verdict": "CONFIRM", "provenance": {"model": "claude-x"}}})
+    page = dash.build([d], simulated=False, journal_dir=tmp_path)
+    assert "AVAILABLE" in page
+    assert "claude-x" in page
+    assert "cannot authorize" in page

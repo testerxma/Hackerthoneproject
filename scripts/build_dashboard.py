@@ -49,6 +49,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # the domain layer and unit-tested there; this file only formats the answer.
 from speedtrader.replay.inspector import (  # noqa: E402
     Authority, StageState, evidence_for, inspect as inspect_decision,
+    option_detail,
 )
 
 # ---------------------------------------------------------------- palette
@@ -363,16 +364,6 @@ def decision_card(d: dict, index: int) -> str:
     </div>"""
 
     # --- options detail
-    opt_html = ""
-    if contract:
-        opt_html = f"""<div class="grid4">
-          {stat("CONTRACT", f'<span class="mono sm">{esc(contract.get("symbol","—"))}</span>')}
-          {stat("STRIKE / EXPIRY", f'{num(contract.get("strike"))} · {esc(contract.get("expiration","—"))}')}
-          {stat("CONTRACTS", esc(sizing.get("contracts","—")))}
-          {stat("MAX LOSS", "$" + num(sizing.get("max_loss_total")), colour=AMBER,
-                tag=badge("EXACT", AMBER))}
-        </div>"""
-
     market = f"""<div class="grid4">
       {stat("PRICE", num(snap.get("price")))}
       {stat("SPREAD", num(snap.get("spread"), 4))}
@@ -402,6 +393,7 @@ def decision_card(d: dict, index: int) -> str:
       </summary>
       <div class="card-b">
         {pipeline_html(d)}
+        {why_card_html(d)}
         <div class="reason">{esc(d.get("rejection_reason") or "authorized")}</div>
         {lanes}
         <div class="sec-t">DECISION INSPECTOR — WHO DECIDED, AND WHERE IT STOPPED</div>
@@ -409,7 +401,7 @@ def decision_card(d: dict, index: int) -> str:
         {debate_html(d)}
         <div class="sec-t">MARKET STATE</div>{market}
         {f'<div class="sec-t">QUANTITATIVE SIGNAL</div>{quant}' if quant else ''}
-        {f'<div class="sec-t">OPTIONS CONTRACT</div>{opt_html}' if opt_html else ''}
+        {options_html(d)}
         {checks_html}
         {evidence_html(d)}
         {rej_html}
@@ -687,15 +679,30 @@ def health_html(account: dict | None, intents: list[dict],
         "sole source of execution authority; cannot be overridden by the AI")
 
     # AI provider: only claim it ran if a decision recorded a model.
-    models = {str(get(d, "ai_review", "judge", "provenance", "model") or "")
+    #: Placeholders a provider may record when no model actually answered.
+    #: Listing these as model NAMES would imply a model ran when none did.
+    _NOT_A_MODEL = {"", "none", "null", "n/a", "unknown", "-"}
+    models = {str(get(d, "ai_review", "judge", "provenance", "model") or "").strip()
               for d in decisions}
-    models.discard("")
-    if models:
+    models = {m for m in models if m.lower() not in _NOT_A_MODEL}
+    # A scripted/deterministic provider is NOT a language model. Reporting it as
+    # an available AI would overstate what actually reviewed these decisions.
+    scripted = {m for m in models
+                if "demo" in m.lower() or "scripted" in m.lower()
+                or "deterministic" in m.lower()}
+    real = models - scripted
+    if real:
         add("AI provider", "AVAILABLE", PURPLE,
-            f"model(s): {', '.join(sorted(models)[:3])} · advisory only")
+            f"model(s): {', '.join(sorted(real)[:3])} · advisory only, "
+            f"cannot authorize")
+    elif scripted:
+        add("AI provider", "SCRIPTED", AMBER,
+            f"{', '.join(sorted(scripted)[:3])} — a deterministic stand-in, "
+            f"not a language model. No LLM reviewed these decisions.")
     else:
         add("AI provider", "NOT CONSULTED", MUTED,
-            "no model recorded — identical outcome to an abstention")
+            "no model recorded — identical outcome to an abstention, because "
+            "this layer can only subtract")
 
     body = "".join(
         f"<tr><td>{esc(n)}</td><td>{badge(st, c)}</td>"
@@ -738,6 +745,214 @@ def audit_html(decisions: list[dict]) -> str:
       <br><b>Not claimed:</b> deterministic replay of an LLM response. A model
       is not reproducible, which is precisely why nothing it emits is inside the
       hash.</div>"""
+
+
+def options_html(d: dict) -> str:
+    """Why THIS contract — the question options judging actually turns on.
+
+    Max profit is shown as a STATEMENT, never a number: for a long call it is
+    unbounded, and a large figure printed beside an exactly-known max loss is
+    how a reader is led to a false expectation.
+    """
+    o = option_detail(d)
+    if not o:
+        return ""
+
+    def cell(label, value, colour=TEXT, sub="", tag=""):
+        return stat(label, value, colour=colour, sub=sub, tag=tag)
+
+    dte = f"{o['dte']}d" if o.get("dte") is not None else "—"
+    spread = (f"{num(o['spread'], 2)} ({num(o['spread_pct'], 1)}%)"
+              if o.get("spread") is not None else "—")
+    oi = o.get("open_interest")
+    liq = badge("thin", AMBER) if isinstance(oi, (int, float)) and oi < 100 \
+        else badge("liquid", GREEN)
+    caps = ", ".join(o.get("caps_applied") or []) or "none"
+
+    return f"""<div class="sec-t">OPTIONS OPPORTUNITY — WHY THIS CONTRACT</div>
+    <div class="grid4">
+      {cell("CONTRACT", f'<span class="mono sm">{esc(o.get("symbol", "—"))}</span>',
+            sub=f'{esc(o.get("type", ""))} · {esc(o.get("direction", ""))}')}
+      {cell("STRIKE / EXPIRY", f'{num(o.get("strike"))} · {esc(o.get("expiration", "—"))}',
+            sub=f'{dte} to expiry')}
+      {cell("BID / ASK", f'{num(o.get("bid"))} / {num(o.get("ask"))}',
+            sub=f'mid {num(o.get("mid"))} · priced at the <b>ask</b>')}
+      {cell("SPREAD", spread, sub="crossed to fill, never assumed")}
+    </div>
+    <div class="grid4" style="margin-top:10px">
+      {cell("CONTRACTS", str(o.get("contracts", "—")),
+            sub=f'{num(o.get("premium_per_contract"))} × {o.get("multiplier", "—")}')}
+      {cell("MAX LOSS (ALL IN)", "$" + num(o.get("max_loss_all_in")), colour=AMBER,
+            tag=badge("EXACT", AMBER),
+            sub=f'${num(o.get("max_loss_total"))} premium + '
+                f'${num(o.get("estimated_fees"))} fees ' + badge("ESTIMATED", MUTED))}
+      {cell("RISK BUDGET USED", num(o.get("budget_used_pct"), 1) + "%",
+            sub=f'of ${num(o.get("risk_budget"))} · caps: {esc(caps)}')}
+      {cell("OPEN INTEREST", str(oi if oi is not None else "—"), sub=liq)}
+    </div>
+    <div class="note">
+      <b>Max profit:</b> {esc(o.get("max_profit", ""))}<br>
+      <b>Selected because:</b> {esc(o.get("selection_reason") or "—")}
+      {f'· {esc(o.get("considered"))} contract(s) considered'
+       if o.get("considered") is not None else ''}<br>
+      <b>Sized because:</b> {esc(o.get("sizing_reason") or "—")}
+    </div>"""
+
+
+def why_card_html(d: dict) -> str:
+    """A one-glance summary of the whole pipeline for this decision.
+
+    Every line is derived from the inspector, so it cannot drift from the
+    detailed panels below it.
+    """
+    try:
+        r = inspect_decision(d)
+    except Exception:
+        return ""
+
+    ev = evidence_for(d)
+    supporting = sum(1 for e in ev if e["supports"])
+    contradicting = len(ev) - supporting
+    o = option_detail(d)
+    review = get(d, "ai_review") or {}
+    judge = review.get("judge") or {}
+    gate = get(d, "risk_gate") or {}
+    checks = [c for c in (gate.get("checks") or []) if isinstance(c, dict)]
+    passed = sum(1 for c in checks if c.get("passed"))
+
+    accepted = r.accepted
+    title = "WHY THIS TRADE?" if accepted else "WHY NOT TRADE?"
+    colour = GREEN if accepted else RED
+
+    lines = [
+        ("Quant signal", esc(get(d, "candidate", "strategy_id") or "no signal")
+         + " " + esc(get(d, "candidate", "direction") or "")),
+        ("Market regime", esc(get(d, "snapshot", "regime") or "unknown")),
+        ("Evidence", f"{supporting} supporting / {contradicting} contradicting"),
+        ("AI review", esc(judge.get("verdict") or "not consulted")
+         + (" — <b>vetoed</b>" if review.get("vetoed") else " — no mechanical effect")),
+        ("Deterministic risk", f"{esc(gate.get('verdict') or '—')} · "
+                               f"{passed}/{len(checks)} hard gates passed"),
+    ]
+    if o:
+        lines.append(("Options", f"{esc(o.get('symbol'))} · max loss "
+                                 f"${num(o.get('max_loss_all_in'))} all in"))
+
+    blocked = r.blocked_at
+    if blocked:
+        lines.append(("Stopped at", f"<b>{esc(blocked.label)}</b> "
+                                    f"({esc(r.authority_that_stopped_it)} layer)"
+                                    + (f" · <span class='code'>{esc(r.reason_code)}</span>"
+                                       if r.reason_code else "")))
+        lines.append(("Consequence", "<b>EXECUTION BLOCKED</b> — no order was sent"))
+    else:
+        lines.append(("Final decision", "<b>AUTHORIZED</b> by the deterministic "
+                                        "layer, not by the AI"))
+
+    body = "".join(
+        f"<div class='why-r'><div class='why-l'>{esc(k)}</div>"
+        f"<div class='why-v'>{v}</div></div>" for k, v in lines)
+    return f"""<div class="why" style="--c:{colour}">
+      <div class="why-h">{title}</div>{body}</div>"""
+
+
+#: Below this many decisions, a rate is noise dressed as a statistic.
+MIN_SAMPLE_FOR_RATES = 20
+
+
+def funnel_html(decisions: list[dict], intents: list[dict]) -> str:
+    """Where candidates go, counted from stored decisions only.
+
+    Counts are always shown because they are facts. RATES are withheld below a
+    minimum sample, because a percentage computed from a handful of decisions
+    reads as a measured property of the strategy when it is noise.
+    """
+    total = len(decisions)
+    if not total:
+        return '<div class="empty">No decisions recorded yet.</div>'
+
+    signalled = sum(1 for d in decisions if get(d, "candidate"))
+    contract = sum(1 for d in decisions if get(d, "options_trace", "contract"))
+    vetoed = sum(1 for d in decisions if get(d, "ai_review", "vetoed"))
+    authorized = sum(1 for d in decisions if _accepted(d))
+    submitted = sum(1 for d in decisions if get(d, "execution"))
+    fills = sum(1 for d in decisions
+                if str(get(d, "reconciliation", "state") or "") == "filled")
+
+    steps = [
+        ("Decisions evaluated", total),
+        ("Quant produced a signal", signalled),
+        ("A contract qualified", contract),
+        ("AI vetoed", vetoed),
+        ("Authorized by deterministic risk", authorized),
+        ("Submitted to the broker", submitted),
+        ("Filled", fills),
+    ]
+    rows = []
+    for label, n in steps:
+        pct = n / total * 100 if total else 0
+        rows.append(f"""<div class="bar-row">
+          <div class="bar-l">{esc(label)}</div>
+          <div class="bar-t"><div class="bar-f" style="width:{pct:.1f}%"></div></div>
+          <div class="bar-n mono">{n}</div></div>""")
+
+    if total < MIN_SAMPLE_FOR_RATES:
+        caveat = (f"<b>Counts only.</b> {total} decision(s) is below the "
+                  f"{MIN_SAMPLE_FOR_RATES}-decision threshold this dashboard "
+                  f"requires before printing a rate: a percentage from a handful "
+                  f"of decisions reads as a measured property of the strategy "
+                  f"when it is noise.")
+    else:
+        caveat = ("Rates are conversion through the pipeline, not performance. "
+                  "No win rate, Sharpe or alpha is computed anywhere.")
+    return "".join(rows) + f'<div class="note">{caveat}</div>'
+
+
+def strategy_html(decisions: list[dict]) -> str:
+    """Per-strategy activity — signals and what happened to them.
+
+    Deliberately no win rate, Sharpe or alpha: with zero resolved trades those
+    are undefined, and printing them as 0.0 or n/a invites the reader to treat
+    absence of evidence as evidence.
+    """
+    by: dict[str, dict[str, int]] = {}
+    for d in decisions:
+        sid = str(get(d, "candidate", "strategy_id") or "")
+        if not sid:
+            continue
+        row = by.setdefault(sid, {"signals": 0, "contract": 0, "vetoed": 0,
+                                  "authorized": 0, "submitted": 0, "filled": 0})
+        row["signals"] += 1
+        if get(d, "options_trace", "contract"):
+            row["contract"] += 1
+        if get(d, "ai_review", "vetoed"):
+            row["vetoed"] += 1
+        if _accepted(d):
+            row["authorized"] += 1
+        if get(d, "execution"):
+            row["submitted"] += 1
+        if str(get(d, "reconciliation", "state") or "") == "filled":
+            row["filled"] += 1
+
+    if not by:
+        return ('<div class="empty">No strategy produced a signal in the '
+                'recorded decisions.</div>')
+
+    body = "".join(
+        f"<tr><td class='mono'>{esc(sid)}</td><td class='mono'>{r['signals']}</td>"
+        f"<td class='mono'>{r['contract']}</td><td class='mono'>{r['vetoed']}</td>"
+        f"<td class='mono'>{r['authorized']}</td><td class='mono'>{r['submitted']}</td>"
+        f"<td class='mono'>{r['filled']}</td>"
+        f"<td>{badge('no performance claim', MUTED)}</td></tr>"
+        for sid, r in sorted(by.items()))
+    return f"""<table class="tbl"><thead><tr><th>strategy</th><th>signals</th>
+      <th>contract found</th><th>AI vetoed</th><th>authorized</th>
+      <th>submitted</th><th>filled</th><th>performance</th></tr></thead>
+      <tbody>{body}</tbody></table>
+      <div class="note"><b>No win rate, Sharpe, alpha or profitability is
+      computed</b> — not withheld for modesty, but because they are undefined
+      without resolved trades. Printing 0.0 would invite a reader to treat
+      absence of evidence as evidence.</div>"""
 
 
 def why_no_trade_html(decisions: list[dict]) -> str:
@@ -977,6 +1192,20 @@ details.sub[open] summary{{border-bottom:1px solid {BORDER};color:{BLUE}}}
 @media(max-width:900px){{.stg{{grid-template-columns:1fr;gap:4px}}
   .stg-t{{text-align:left}}}}
 
+/* ---- why / why-not card */
+.why{{border:1px solid var(--c)33;border-left:3px solid var(--c);border-radius:9px;
+  background:linear-gradient(90deg,var(--c)0d,transparent);
+  padding:13px 15px;margin:13px 0}}
+.why-h{{font-size:11px;font-weight:700;letter-spacing:1.4px;color:var(--c);
+  text-transform:uppercase;margin-bottom:10px}}
+.why-r{{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:4px 0;
+  font-size:12.5px;border-bottom:1px solid {BORDER}}}
+.why-r:last-child{{border-bottom:none}}
+.why-l{{color:{DIM};font-size:11px;letter-spacing:.5px;text-transform:uppercase;
+  padding-top:2px}}
+.why-v{{color:{TEXT};line-height:1.5}}
+@media(max-width:640px){{.why-r{{grid-template-columns:1fr;gap:2px}}}}
+
 footer{{margin-top:34px;padding-top:20px;border-top:1px solid {BORDER};
   font-size:11.5px;color:{DIM};line-height:1.75}}
 @media(max-width:640px){{.wrap{{padding:16px 13px 60px}}
@@ -1022,6 +1251,16 @@ footer{{margin-top:34px;padding-top:20px;border-top:1px solid {BORDER};
 <div class="panel">
   <div class="sec">System health</div>
   <div class="scroll">{health_html(account, intents, decisions, journal_dir)}</div>
+</div>
+
+<div class="panel">
+  <div class="sec">Decision funnel</div>
+  {funnel_html(decisions, intents)}
+</div>
+
+<div class="panel">
+  <div class="sec">Strategy activity</div>
+  <div class="scroll">{strategy_html(decisions)}</div>
 </div>
 
 <div class="panel">

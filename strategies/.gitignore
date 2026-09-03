@@ -1,0 +1,6 @@
+# Your strategies are YOURS. Anything you drop in here is ignored by default so
+# a private edge is never committed by accident.
+#
+# The example below is tracked deliberately, as a working reference.
+*.py
+!example_breakout.py

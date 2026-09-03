@@ -1,0 +1,186 @@
+name: CI
+
+# The deterministic core is the part of this system where a silent regression
+# costs money rather than embarrassment, so it is verified on every push.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verify the authoritative MQL5 reference is unmodified
+        # §47: any change to the ported-from source is an integrity issue, not a
+        # diff. Checked before the suite so the failure is unambiguous when the
+        # quant tests would also fail as a consequence.
+        run: |
+          echo "c799acaa797a4f23a8c9531c3b4f14599b73736af2151d9eeb7f42209332e8d9  docs/reference/SpeedTraderBot_v6.1.mq5" \
+            | sha256sum --check --strict
+
+      - name: Lint (errors only)
+        # Scoped to real defects — undefined names, redefinitions, syntax errors.
+        # Stylistic rules are deliberately not gating: a formatting opinion must
+        # never be able to block a correctness fix.
+        run: ruff check src tests scripts --select F821,F811,F823,E9
+
+      - name: Tests
+        run: pytest -q
+
+  mutation:
+    # A green suite proves the tests pass. It does not prove they would NOTICE a
+    # safety guard being removed — which, for this system, is the whole claim.
+    # Each guard is deliberately broken and the suite must go red.
+    name: mutation testing
+    runs-on: ubuntu-latest
+    # Belt and braces alongside the harness's own per-mutant ceiling: a mutant
+    # that removes a termination condition makes the suite run forever, and
+    # without a cap that burns a runner until GitHub's 6-hour job limit.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Every safety guard must be load-bearing
+        # Non-zero if any mutant SURVIVES (a guard nothing tests), if a declared
+        # equivalent mutant turns out to be killable, or if an anchor is lost —
+        # the last meaning a guard was refactored and is silently no longer
+        # covered here.
+        run: python scripts/mutation_test.py
+
+  safety-invariants:
+    # These assertions are cheap and non-negotiable, so they run as their own
+    # job: if the suite above is ever narrowed, these still fail loudly.
+    name: safety invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Paper trading only — never live
+        run: |
+          python - <<'PY'
+          import sys, yaml
+          cfg = yaml.safe_load(open("configs/execution_config.yaml"))
+          env = cfg.get("environment")
+          if env != "paper":
+              sys.exit(f"execution_config.environment must be 'paper', got {env!r}")
+          if cfg.get("replay_execution_enabled") is not False:
+              sys.exit("replay_execution_enabled must be false")
+          print("environment=paper, replay execution disabled")
+          PY
+
+      - name: Risk config must be fail-closed
+        run: |
+          python - <<'PY'
+          import sys, yaml
+          cfg = yaml.safe_load(open("configs/risk_config.yaml"))
+          for key in ("fail_closed", "kill_switch_enabled"):
+              if cfg.get(key) is not True:
+                  sys.exit(f"risk_config.{key} must be true, got {cfg.get(key)!r}")
+          print("risk config is fail-closed with the kill switch enabled")
+          PY
+
+      - name: The autonomous runtime must start and stop cleanly
+        # A bounded loop that cannot be stopped is the failure mode that
+        # matters most for an unattended trader, so the kill switch and the
+        # cycle bound are exercised for real, not just unit-tested.
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "src")
+          from speedtrader.app.runtime import (
+              AutonomousRuntime, RuntimeLimits, RuntimeState, StopReason)
+
+          rt = AutonomousRuntime(
+              symbols=["SPY"], cycle_fn=lambda s, c: None,
+              limits=RuntimeLimits(interval_seconds=1, max_cycles=2,
+                                   require_market_open=False),
+              sleep_fn=lambda s: None)
+          health = rt.run()
+          assert health.state is RuntimeState.STOPPED, health.state
+          assert health.cycles_completed == 2, health.cycles_completed
+          assert health.stop_reason is StopReason.MAX_CYCLES
+          print("runtime start/stop OK:", health.to_record())
+          PY
+
+      - name: No credentials in any generated artefact
+        # The dashboard reads the paper account. It must render an account
+        # NUMBER and never a key, and must contain no script element at all.
+        run: |
+          python scripts/build_dashboard.py --out /tmp/dash.html
+          python - <<'PY'
+          import re, sys, pathlib
+          page = pathlib.Path("/tmp/dash.html").read_text()
+          if re.search(r"\b(?:AK|PK|SK)[A-Z0-9]{18,}\b", page):
+              sys.exit("credential-shaped literal in the generated dashboard")
+          for bad in ("<script", "http://", "https://", "onerror=", "javascript:"):
+              if bad in page:
+                  sys.exit(f"generated dashboard contains {bad!r}")
+          print("dashboard is credential-free, script-free and self-contained")
+          PY
+
+      - name: No committed secrets
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          # Real Alpaca keys are long uppercase alphanumerics; the tests use
+          # short obvious dummies, so require length to avoid flagging those.
+          pattern = re.compile(r"\b(?:AK|PK|SK)[A-Z0-9]{18,}\b")
+          bad = []
+          for p in pathlib.Path(".").rglob("*"):
+              if not p.is_file() or ".git/" in str(p):
+                  continue
+              if p.suffix.lower() in {".mq5", ".png", ".jpg", ".pdf"}:
+                  continue
+              try:
+                  text = p.read_text(encoding="utf-8", errors="ignore")
+              except OSError:
+                  continue
+              if pattern.search(text):
+                  bad.append(str(p))
+          if pathlib.Path(".env").exists():
+              bad.append(".env (must never be committed)")
+          if bad:
+              sys.exit("possible committed secrets: " + ", ".join(bad))
+          print("no credential-shaped literals found")
+          PY

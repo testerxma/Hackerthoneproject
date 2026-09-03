@@ -1,0 +1,115 @@
+# SpeedTrader AI — Execution Configuration (§59, §60, §115)
+version: "1.0"
+
+broker: alpaca
+environment: paper           # §10. Never "live" during the hackathon.
+paper_base_url: "https://paper-api.alpaca.markets"
+data_feed: iex               # free tier; "sip" requires a paid subscription
+
+decision_ttl_seconds: 30     # §23
+signal_ttl_seconds: 30
+revalidate_on_expiry: true   # §65
+
+idempotency_enabled: true    # §60
+duplicate_window_seconds: 300
+
+default_order_type: market
+default_time_in_force: day
+attach_bracket: true         # stop_loss + take_profit submitted with entry
+
+max_submit_retries: 3        # InpMaxRetries = 3
+retry_delay_seconds: 2       # InpRetryDelaySec = 2
+
+reconcile_interval_seconds: 30   # §64, §114
+require_broker_confirmation: true # §62: submitted != filled, ever
+
+# --------------------------------------------------------------------------
+# EQUITY TRANSACTION COST — PRE-TRADE ESTIMATE
+# --------------------------------------------------------------------------
+# WHAT THIS IS
+#   A per-share, ROUND-TRIP, PRICE-AWARE, QUANTITY-UNAWARE estimate feeding
+#   expected_value. It is NOT a realized fee. Realized fees are quantity- and
+#   notional-aware, apply caps, and mirror the broker's daily aggregation; they
+#   belong to TradeOutcome.fees after execution and use a separate model.
+#
+# PAPER VS LIVE — WHAT EV MEANS
+#   environment is `paper`, and Alpaca paper accounts are charged no real fees.
+#   These costs are deliberately NOT zeroed on that basis. EV represents estimated
+#   execution ECONOMICS — what the strategy would cost to run — not what the
+#   simulator debits. Zeroing would make the positive-EV gate meaningless and
+#   produce a decision trace whose economics do not transfer to live trading.
+#   EV in paper mode is therefore intentionally more pessimistic than the paper
+#   account's own P&L. This is correct and must not be "fixed".
+#
+# ESTIMATE QUALITY
+#   CAT           exact          flat per share, both legs, no cap
+#   TAF           conservative   per-trade cap NOT applied; the cap can only reduce
+#   SEC on SELL   exact          the sell leg is the entry, price known
+#   SEC on BUY    conservative   sell leg priced at take_profit, upper of two outcomes
+#   daily rounding  NOT modelled — the one non-conservative omission. Alpaca
+#                   aggregates per fee type daily per account then rounds up to the
+#                   cent; that cannot be attributed to a single pre-trade decision.
+
+transaction_cost:
+  model: pre_trade_round_trip_per_share_estimate
+  rates_effective_date: "2026-09-01"
+  rates_source: "https://files.alpaca.markets/disclosures/library/BrokFeeSched.pdf"
+
+  default:
+    # ---- AUTHORITATIVE: transcribed from the fee schedule above ----------
+    regulatory:
+      sec_rate_of_notional: 0.0000206   # sells only, x trade value
+      taf_per_share:        0.000195    # sells only, per share, max $9.79/trade
+                                        #   (cap at 50,205 shares) — cap NOT applied
+      cat_per_share:        0.000003    # buys and sells, per executed equiv. share
+                                        #   NMS equities: 1 share = 1 equiv. share
+      sides_per_round_trip: 2           # CAT applies to both legs; SEC/TAF to the sell
+      source: authoritative
+      reference: "Alpaca Brokerage Fee Schedule, revised 2026-09-01"
+
+    # ---- OPERATOR ASSUMPTION: explicitly authorised, explicitly marked ----
+    slippage:
+      per_share: 0.0
+      source: operator_assumption
+      assumption: >-
+        No slippage estimate is available yet: the system has no execution history
+        from which to measure one. This is NOT a claim that real execution has zero
+        slippage. Replace with a measured per-share figure once fills exist. Until
+        then EV is optimistic by exactly the unmeasured slippage.
+
+    # ---- RESOLVED 2026-09-02: standard retail, commission-free ----
+    # The schedule (verified against the PDF text, not a summary — see
+    # docs/decisions/0001-transaction-cost-research.md) states that Alpaca
+    # Securities does not charge commissions EXCEPT for: index options trades,
+    # use of the Elite Smart Router under the Alpaca Elite offering, order flow
+    # determined to be non-retail, and accounts established via an authorized
+    # business partner.
+    #
+    # NOTE: an earlier version of this comment claimed the schedule quotes a
+    # "RANGE (0%-3% per transaction)". No such range appears in the current
+    # schedule; that claim was wrong and has been removed.
+    #
+    # source is operator_assumption, NOT authoritative, and the distinction is
+    # deliberate: the RATE is published, but the APPLICABILITY — that this
+    # account is standard retail and none of the four exceptions apply — is an
+    # attestation about the account, which no document can make.
+    commission:
+      per_share:        0.0
+      rate_of_notional: 0.0
+      source: operator_assumption
+      assumption: >-
+        Direct Alpaca paper account on the standard paper endpoint, standard
+        routing: no Elite Smart Router, no authorized-business-partner
+        arrangement, and retail order flow. Under the Brokerage Fee Schedule
+        (revised 2026-09-01) that combination carries no commission on US equity
+        trades. Attested 2026-09-02. This records the rate as ZERO, which is not
+        the same as the rate being UNKNOWN — if this account is ever moved to
+        Alpaca Elite, routed through a partner, or reclassified as non-retail,
+        this value becomes wrong and must be re-stated.
+
+  overrides: {}                        # per symbol; a partial override is rejected
+
+include_spread_in_ev_cost: true        # spread comes from the snapshot, not config
+
+# §91 Replay safety
+replay_execution_enabled: false

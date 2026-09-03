@@ -1,0 +1,74 @@
+# SpeedTrader AI — Strategy Configuration (§12, §17, §115)
+#
+# PORTABILITY RULE: strategies using fixed pip distances do not survive the FX->equity
+# move (a fixed 15-pip stop is meaningless across a $231 stock and a $12 stock).
+# ATR-normalised strategies port cleanly because they are volatility-relative.
+version: "1.0"
+
+primary_timeframe: "1Hour"
+entry_timeframe: "30Min"
+trend_timeframe: "4Hour"
+warmup_bars: 300
+
+strategies:
+  # --- Tier 1: fully ATR-normalised. Port first. ---
+  S7:
+    name: "Momentum Breakout (ATR)"
+    enabled: true
+    port_status: clean            # sl = 1.5*ATR, tp = 3.0*ATR — zero pip constants
+    base_score: 50.0
+    lookback_bars: 20
+    stop_atr: 1.5
+    target_atr: 3.0
+    min_candle_atr: 1.5
+    min_adx: 0.0
+    allowed_regimes: [STRONG_UP, WEAK_UP, STRONG_DOWN, WEAK_DOWN, VOLATILE]
+  S6:
+    name: "RSI Divergence"
+    enabled: false
+    port_status: clean            # stop = swing +/- 0.5*ATR
+    base_score: 50.0
+    stop_atr: 0.5
+    target_rr: 2.5
+    rsi_bull_max: 40.0
+    rsi_bear_min: 60.0
+    allowed_regimes: [RANGING, WEAK_UP, WEAK_DOWN, STRONG_UP, STRONG_DOWN]
+  S3:
+    name: "Market Structure Break (BOS)"
+    enabled: false
+    port_status: minor_translation  # 2*pip break buffer -> 0.05% of price
+    base_score: 50.0
+    lookback_bars: 10
+    break_buffer_pct: 0.05
+    stop_atr: 0.3
+    target_rr: 2.5
+    min_adx: 20.0
+    allowed_regimes: [STRONG_UP, WEAK_UP, STRONG_DOWN, WEAK_DOWN]
+
+  # --- Tier 2: ATR-based, port after Tier 1 works ---
+  S9:  {name: "Ichimoku Kumo Breakout", enabled: false, port_status: clean, base_score: 50.0}
+  S12: {name: "Liquidity Sweep",        enabled: false, port_status: clean, base_score: 55.0}
+  S14: {name: "Failed Breakout / Fakey",enabled: false, port_status: clean, base_score: 50.0}
+  S4:  {name: "Supply & Demand + FVG",  enabled: false, port_status: mixed, base_score: 50.0}
+
+  # --- Tier 3: fixed-pip stops. Require recalibration to ATR before enabling. ---
+  S1:  {name: "RSI Reversal + EMA",     enabled: false, port_status: needs_recalibration, base_score: 50.0}
+  S2:  {name: "VWAP Bounce",            enabled: false, port_status: needs_recalibration, base_score: 50.0}
+  S5:  {name: "EMA Triple Crossover",   enabled: false, port_status: needs_recalibration, base_score: 50.0}
+  S8:  {name: "Multi-TF Confluence",    enabled: false, port_status: needs_recalibration, base_score: 55.0}
+  S10: {name: "Triangle Breakout",      enabled: false, port_status: needs_recalibration, base_score: 55.0}
+  S13: {name: "Inside Bar Compression", enabled: false, port_status: needs_recalibration, base_score: 45.0}
+
+  # --- Never implemented in the source. Declared, not invented. (§12, §17) ---
+  S11: {name: "Harmonic", enabled: false, port_status: not_implemented_in_source, base_score: 0.0}
+
+# Score bonuses. Three FX-only bonuses are removed — see risk_config min_score note.
+bonuses:
+  volume_high:   {threshold: 1.5, points: 8}
+  volume_medium: {threshold: 1.2, points: 4}
+  squeeze:       {points: 10}
+  fib:           {points: 8, tolerance_pct: 0.10}
+  gap_aligned:   {points: 5}    # NEW: equity-specific, replaces session Overlap bonus
+  # REMOVED: basket (+6) currency momentum — no currencies
+  # REMOVED: swap (+3) — no overnight swap on equities
+  # REMOVED: overlap (+5) — no London/NY session overlap

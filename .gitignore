@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.ruff_cache/
+data/decisions/*.jsonl
+data/execution_intents.jsonl
+data/STOP
+data/snapshots/*
+logs/
+*.db
+.DS_Store
+data/dashboard.html
+
+# editable-install build artefacts
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/

@@ -18,6 +18,17 @@ python scripts/run_options_demo.py --replay --dashboard
 No API key. No network. No configuration. That runs the complete decision cycle,
 re-derives every decision from its stored snapshot, and writes the command centre.
 
+**Full setup, live paper trading, and the strategy plugin system:** see
+[`docs/SUBMISSION.md`](docs/SUBMISSION.md) for the complete engineering log —
+what was built, what was rejected and why, and the exact commands to reproduce
+every claim in this README.
+
+| | |
+|---|---|
+| **Team** | _TODO — owner to fill in team name and contact email before submitting_ |
+| **License** | [MIT](LICENSE) |
+| **Live verification** | Real paper orders placed via Alpaca's official MCP server (see [Live Alpaca](#live-alpaca)) |
+
 ---
 
 ## The idea

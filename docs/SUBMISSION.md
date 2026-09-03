@@ -20,7 +20,7 @@ satisfies a narrow, mutation-tested contract (see §6).
 ## 2. Setup
 
 ```bash
-git clone <this repo>
+git clone https://github.com/testerxma/Hackerthoneproject.git
 cd Hackerthoneproject
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"

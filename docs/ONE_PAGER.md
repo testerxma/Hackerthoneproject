@@ -1,6 +1,6 @@
 # SpeedTrader AI — one-page technical summary
 
-**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 1020 tests
+**Alpaca AI Trading Agents Hackathon** · options · paper trading only · 1074 tests
 
 ---
 
@@ -74,7 +74,7 @@ resolved by reconciliation against the broker, never by a retry that could
 double-fill — the idempotency key is the same single-use nonce.
 
 Every guard is **mutation-tested by a harness that runs in CI**
-(`scripts/mutation_test.py`, 64 mutants: 62 killed, 0 survived, 2 declared
+(`scripts/mutation_test.py`, 74 mutants: 72 killed, 0 survived, 2 declared
 equivalent with the argument for why). Each mutant is a reviewable edit to real
 source. The harness fails if a declared equivalent is ever killed, or if a
 mutant's anchor disappears in a refactor — so the score cannot be padded. It

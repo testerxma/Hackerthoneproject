@@ -8,7 +8,7 @@ real generated command centre is <code>data/dashboard.html</code>.</i></sub>
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 1020 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 1074 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -114,8 +114,8 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 1020 passed
-python scripts/mutation_test.py              # 64 mutants; every guard is load-bearing
+python -m pytest -q                          # 1074 passed
+python scripts/mutation_test.py              # 74 mutants; every guard is load-bearing
 ```
 
 | Scenario | Demonstrates |
@@ -295,11 +295,11 @@ Critical logic is **mutation-tested, reproducibly**: each guard is deliberately
 broken and the suite must go red.
 
 ```bash
-python scripts/mutation_test.py          # 64 mutants; runs in CI
+python scripts/mutation_test.py          # 74 mutants; runs in CI
 python scripts/mutation_test.py --list   # see exactly what gets broken
 ```
 
-**62 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
+**72 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
 a precise, reviewable edit to real source — the exact string removed and the
 exact string put in its place — so a reviewer can judge whether breaking it
 should matter, rather than trusting a number.
@@ -435,6 +435,50 @@ meaningful in-process sandbox — validation enforces the contract, not safety f
 hostile code. Read a third-party strategy as you would any dependency. What *is*
 guaranteed is narrower and true: no strategy can execute a trade, enlarge a
 position, weaken a limit, or bypass the licence. Those paths do not exist.
+
+---
+
+## Decision inspector — who decided, and where it stopped
+
+The dashboard renders every decision as a stage-by-stage causal chain, and the
+thing a judge must not be able to misread is which **authority class** each
+stage belongs to:
+
+| Class | Can it stop a trade? | Can it start one? |
+|---|---|---|
+| **advisory** (AI) | yes — veto | **never** |
+| **deterministic** (risk engine, sizing, authorization) | yes | **yes — the only thing that can** |
+| **broker** | — | observed, not decided |
+
+For each stage: state, exact reason code, timestamp, and what it observed. A
+stage that never ran renders as `NOT REACHED`, never as passed. A stage this
+system does not have renders as `NOT BUILT` rather than as an empty box
+implying it exists.
+
+The derivation lives in `src/speedtrader/replay/inspector.py`, not in the
+template — the dashboard is an observer, so "what did the system decide" is
+answered by a unit-tested domain module and merely formatted by the page.
+
+### Evidence and provenance
+
+Every claim behind a decision is listed with the value actually observed and
+whether it supports or contradicts the trade. Stale market data shows as
+**contradicting**, not as a passing check.
+
+**No news, sentiment or fundamental evidence layer exists in this system, and
+none is rendered.** This project has no analyst team and no research manager;
+inventing them in the UI would be the easiest and worst lie available. What it
+does have is stronger for audit purposes: every row is a value the
+deterministic engine computed and can recompute from the stored snapshot.
+
+### Reproducibility and audit
+
+The fingerprint covers the **deterministic** decision only. The AI review is
+excluded *by construction*, so the same market state hashes identically whether
+the model confirmed, abstained, timed out or was never called.
+
+**Not claimed:** deterministic replay of an LLM response. A model is not
+reproducible, which is exactly why nothing it emits is inside the hash.
 
 ---
 

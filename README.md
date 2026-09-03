@@ -8,7 +8,7 @@ real generated command centre is <code>data/dashboard.html</code>.</i></sub>
 
 **An options trading agent where the AI can veto a trade but can never cause one.**
 
-Alpaca AI Trading Agents Hackathon · Paper trading only · 1074 tests
+Alpaca AI Trading Agents Hackathon · Paper trading only · 1116 tests
 
 ```bash
 pip install -e ".[dev]"
@@ -114,8 +114,8 @@ both directions.
 
 ```bash
 python scripts/run_options_demo.py           # all six scenarios
-python -m pytest -q                          # 1074 passed
-python scripts/mutation_test.py              # 74 mutants; every guard is load-bearing
+python -m pytest -q                          # 1116 passed
+python scripts/mutation_test.py              # 78 mutants; every guard is load-bearing
 ```
 
 | Scenario | Demonstrates |
@@ -295,11 +295,11 @@ Critical logic is **mutation-tested, reproducibly**: each guard is deliberately
 broken and the suite must go red.
 
 ```bash
-python scripts/mutation_test.py          # 74 mutants; runs in CI
+python scripts/mutation_test.py          # 78 mutants; runs in CI
 python scripts/mutation_test.py --list   # see exactly what gets broken
 ```
 
-**72 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
+**76 killed, 0 survived, 2 declared equivalent by construction.** Every mutant is
 a precise, reviewable edit to real source — the exact string removed and the
 exact string put in its place — so a reviewer can judge whether breaking it
 should matter, rather than trusting a number.
@@ -470,6 +470,32 @@ none is rendered.** This project has no analyst team and no research manager;
 inventing them in the UI would be the easiest and worst lie available. What it
 does have is stronger for audit purposes: every row is a value the
 deterministic engine computed and can recompute from the stored snapshot.
+
+### Options opportunity inspector
+
+Options are the hackathon's core requirement, so "why **this** contract" is
+answerable from stored data alone: full quote (bid / ask / mid / spread), strike,
+expiry and DTE measured *from the snapshot the decision faced*, open interest
+with a thin-book flag, contracts, risk-budget utilisation, and the selection
+reason with how many contracts were considered.
+
+**Max loss is shown all-in** — premium **plus** estimated fees — and labelled
+`EXACT`. **Max profit is deliberately never a number.** For a long call it is
+unbounded, and printing a large figure beside an exactly-known max loss is how a
+reader is led to a false expectation, so it is stated rather than quantified.
+Contracts are priced at the **ask**, never the mid: the mid is not a price
+anyone will sell to you at, and sizing against it would make the max-loss figure
+untrue.
+
+### Decision funnel and strategy activity
+
+Counts of what happened to every candidate, from real stored decisions only.
+**Rates are withheld below 20 decisions** — a percentage from a handful of
+decisions reads as a measured property of the strategy when it is noise.
+
+**No win rate, Sharpe, alpha or profitability is computed anywhere** — not from
+modesty, but because they are undefined without resolved trades. Printing `0.0`
+would invite reading absence of evidence as evidence.
 
 ### Reproducibility and audit
 

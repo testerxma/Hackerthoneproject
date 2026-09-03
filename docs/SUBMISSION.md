@@ -41,10 +41,10 @@ pip install -e ".[live]"      # MCP broker transport
 python scripts/run_options_demo.py --replay --dashboard
 
 # the full test suite
-python -m pytest -q                          # 1074 passed, 1 skipped
+python -m pytest -q                          # 1116 passed, 1 skipped
 
 # mutation testing — proves every safety guard is load-bearing, not decorative
-python scripts/mutation_test.py               # 74 mutants: 72 killed, 2 equivalent
+python scripts/mutation_test.py               # 78 mutants: 76 killed, 2 equivalent
 
 # against the real Alpaca paper API (sends orders only with --submit)
 python scripts/run_live_paper.py --scan
@@ -160,8 +160,8 @@ object.
 
 ## 7. Numbers, as of the final commit
 
-- **1074 tests passing**, 1 skipped
-- **49 mutation tests**: 72 killed, 0 survived, 2 declared equivalent (with the
+- **1116 tests passing**, 1 skipped
+- **49 mutation tests**: 76 killed, 0 survived, 2 declared equivalent (with the
   argument for why, and the harness fails if either is ever actually killed —
   that would mean the argument was wrong)
 - **2 real orders placed** on the Alpaca paper API through the full stack

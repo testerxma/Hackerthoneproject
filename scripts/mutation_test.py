@@ -435,22 +435,44 @@ MUTANTS: list[Mutant] = [
 
 # ==========================================================================
 
+#: Wall-clock ceiling for one mutant's test run.
+#:
+#: Some mutants REMOVE A TERMINATION CONDITION — disabling the runtime's
+#: max_cycles bound makes its loop run forever, so the suite never finishes
+#: rather than failing. Without this ceiling the harness inherits that hang,
+#: and in CI it burns a runner until the platform's job limit. A hang is
+#: still a KILL (the tests did not pass), but it is reported distinctly:
+#: "the guard is load-bearing" and "removing it wedges the process" are
+#: different findings and the second one deserves to be visible.
+#:
+#: 60s is roughly two orders of magnitude above the slowest legitimate
+#: mutant run, so it cannot mistake a slow CI runner for a hang, while
+#: keeping the cost of the one genuinely non-terminating mutant bounded.
+MUTANT_TIMEOUT_SECONDS = 60
+
+
 def _run_tests(paths: tuple[str, ...]) -> tuple[bool, str]:
     """True if the suite PASSED (i.e. the mutant survived)."""
     targets = [str(TESTS / p) for p in paths] or [str(TESTS)]
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-x", "-q", "--no-header", "-p",
-         "no:cacheprovider", *targets],
-        cwd=ROOT, capture_output=True, text=True,
-        # CPython invalidates a .pyc on (mtime, size). Most mutants here are
-        # the same LENGTH as the code they replace and are written within the
-        # same filesystem timestamp tick, so a .pyc compiled from mutated
-        # source can outlive the restore and be served to a LATER run. That
-        # bit this harness during development: a full suite run after a
-        # mutation run failed against source that was already correct.
-        # Not writing bytecode at all removes the whole class of problem.
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-x", "-q", "--no-header", "-p",
+             "no:cacheprovider", *targets],
+            cwd=ROOT, capture_output=True, text=True,
+            timeout=MUTANT_TIMEOUT_SECONDS,
+            # CPython invalidates a .pyc on (mtime, size). Most mutants here
+            # are the same LENGTH as the code they replace and are written
+            # inside one filesystem timestamp tick, so bytecode compiled from
+            # mutated source can outlive the restore and be served to a LATER
+            # run. That bit this harness during development: a full suite run
+            # after a mutation run failed against source already correct.
+            # Not writing bytecode at all removes the whole class of problem.
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        return False, (f"TIMED OUT after {MUTANT_TIMEOUT_SECONDS}s — the mutant "
+                       f"removed a termination condition, so the suite never "
+                       f"finished. Counted as killed: the tests did not pass.")
     return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -470,6 +492,11 @@ def _purge_bytecode(rel_paths) -> None:
 
 
 def _summary_line(output: str) -> str:
+    # A hang is a different finding from a failure — "the guard is
+    # load-bearing" versus "removing it wedges the process" — so it must not
+    # be flattened into a missing-summary message.
+    if output.startswith("TIMED OUT"):
+        return output.split(" — ")[0] + " (removed a termination condition)"
     for line in reversed(output.strip().splitlines()):
         if "passed" in line or "failed" in line or "error" in line:
             return line.strip().strip("=").strip()

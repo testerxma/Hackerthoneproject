@@ -60,6 +60,10 @@ jobs:
     # Each guard is deliberately broken and the suite must go red.
     name: mutation testing
     runs-on: ubuntu-latest
+    # Belt and braces alongside the harness's own per-mutant ceiling: a mutant
+    # that removes a termination condition makes the suite run forever, and
+    # without a cap that burns a runner until GitHub's 6-hour job limit.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

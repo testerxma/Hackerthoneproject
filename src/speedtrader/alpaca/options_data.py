@@ -34,6 +34,14 @@ from ..options.contracts import (
 )
 
 
+#: Alpaca caps the latest-quote endpoint at 100 symbols per request. Found by
+#: calling the live API: a 500-contract chain returns
+#: `APIError: {"message":"symbol limit is 100"}`. Quotes are therefore batched.
+#: The adapter failed CLOSED when it hit this (no chain rather than an empty
+#: one), which was correct but still meant no contract could ever be priced.
+QUOTE_BATCH_LIMIT = 100
+
+
 class OptionsDataUnavailable(RuntimeError):
     """Options data could not be obtained. Callers treat this as NO TRADE —
     never as an empty chain, which would look like 'no opportunity'."""
@@ -152,6 +160,13 @@ def map_quote(raw: Any) -> OptionQuote | None:
     return OptionQuote(bid=bid, ask=ask)
 
 
+def _batched(items: list[Any], size: int) -> list[list[Any]]:
+    """Split into request-sized chunks. Never yields an empty batch."""
+    if size < 1:
+        raise ValueError(f"batch size must be >= 1, got {size}")
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
 def build_chain(
     contracts: Iterable[Any],
     quotes: dict[str, Any] | None = None,
@@ -218,15 +233,20 @@ class AlpacaOptionsData:
         symbols = [s for s in symbols if s]
         quotes: dict[str, Any] = {}
         if symbols:
-            try:
-                from alpaca.data.requests import OptionLatestQuoteRequest
+            from alpaca.data.requests import OptionLatestQuoteRequest
 
-                quotes = dict(self.data.get_option_latest_quote(
-                    OptionLatestQuoteRequest(symbol_or_symbols=symbols)
-                ) or {})
-            except Exception as e:
-                raise OptionsDataUnavailable(
-                    f"could not fetch option quotes: {type(e).__name__}: {e}"
-                ) from e
+            for batch in _batched(symbols, QUOTE_BATCH_LIMIT):
+                try:
+                    quotes.update(self.data.get_option_latest_quote(
+                        OptionLatestQuoteRequest(symbol_or_symbols=batch)
+                    ) or {})
+                except Exception as e:
+                    # One failed batch means part of the chain is unpriced, and a
+                    # partially-priced chain would silently narrow selection to
+                    # whichever contracts happened to load. Fail the whole fetch.
+                    raise OptionsDataUnavailable(
+                        f"could not fetch option quotes for a batch of "
+                        f"{len(batch)}: {type(e).__name__}: {e}"
+                    ) from e
 
         return build_chain(raw_contracts, quotes)

@@ -174,3 +174,82 @@ def test_an_invalid_spot_is_refused(spot):
     d = AlpacaOptionsData(None, None)
     with pytest.raises(OptionsDataUnavailable):
         d.fetch_chain(ChainRequest("AAPL"), spot=spot, asof=date(2026, 9, 2))
+
+
+# ============================================ quote batching
+# Alpaca caps the latest-quote endpoint at 100 symbols. Found by calling the
+# live API with a 354-contract AAPL chain, which returned
+# APIError: {"message":"symbol limit is 100"}. The adapter failed CLOSED (no
+# chain rather than an empty one) — correct, but it meant no contract could
+# ever be priced against the real broker.
+
+from speedtrader.alpaca.options_data import QUOTE_BATCH_LIMIT, _batched  # noqa: E402
+
+
+def test_the_batch_limit_matches_alpacas_documented_cap():
+    assert QUOTE_BATCH_LIMIT == 100
+
+
+@pytest.mark.parametrize("n,expected", [
+    (0, 0), (1, 1), (100, 1), (101, 2), (354, 4), (500, 5),
+])
+def test_symbols_are_split_into_request_sized_batches(n, expected):
+    assert len(_batched(list(range(n)), 100)) == expected
+
+
+def test_no_batch_exceeds_the_limit_and_none_is_empty():
+    batches = _batched(list(range(354)), QUOTE_BATCH_LIMIT)
+    assert all(0 < len(b) <= QUOTE_BATCH_LIMIT for b in batches)
+    assert sum(len(b) for b in batches) == 354
+
+
+def test_batching_preserves_every_symbol_exactly_once():
+    symbols = [f"S{i}" for i in range(250)]
+    flat = [s for batch in _batched(symbols, QUOTE_BATCH_LIMIT) for s in batch]
+    assert flat == symbols
+
+
+def test_a_zero_batch_size_is_refused_rather_than_looping_forever():
+    with pytest.raises(ValueError):
+        _batched([1, 2, 3], 0)
+
+
+class _Chain:
+    """A chain large enough to require several quote requests."""
+    def __init__(self, n):
+        self.option_contracts = [
+            type("C", (), {**RAW, "symbol": f"SYM{i}"})() for i in range(n)]
+
+    def get_option_contracts(self, *a, **k):
+        return self
+
+
+class _CountingQuotes:
+    def __init__(self, fail_on=None):
+        self.batch_sizes, self.fail_on = [], fail_on
+
+    def get_option_latest_quote(self, request):
+        symbols = request.symbol_or_symbols
+        self.batch_sizes.append(len(symbols))
+        if self.fail_on is not None and len(self.batch_sizes) == self.fail_on:
+            raise RuntimeError("upstream hiccup")
+        return {s: {"bid_price": 1.0, "ask_price": 1.2} for s in symbols}
+
+
+def test_a_large_chain_is_fetched_in_several_capped_requests():
+    quotes = _CountingQuotes()
+    chain = AlpacaOptionsData(_Chain(354), quotes).fetch_chain(
+        ChainRequest("AAPL"), spot=230.0, asof=date(2026, 9, 2))
+    assert len(quotes.batch_sizes) == 4
+    assert max(quotes.batch_sizes) <= QUOTE_BATCH_LIMIT
+    assert len(chain) == 354
+    assert all(c.quote is not None for c in chain)
+
+
+def test_one_failed_batch_fails_the_whole_fetch():
+    """A partially-priced chain would silently narrow selection to whichever
+    contracts happened to load — a quieter and worse failure than no chain."""
+    quotes = _CountingQuotes(fail_on=2)
+    with pytest.raises(OptionsDataUnavailable, match="batch"):
+        AlpacaOptionsData(_Chain(354), quotes).fetch_chain(
+            ChainRequest("AAPL"), spot=230.0, asof=date(2026, 9, 2))
